@@ -1,0 +1,16 @@
+name: cso_phantom
+description: CSO PHANTOM - client VPN (VLESS, VMess, Trojan, Shadowsocks)
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_vless: ^1.1.5
+  shared_preferences: ^2.2.0
+
+flutter:
+  uses-material-design: true
