@@ -46,6 +46,10 @@ class Server {
   String proxy; // SSH : proxy intermédiaire « hote:port »
   bool locked; // config partagée : détails masqués dans l'appli
   int expires; // date d'expiration (ms depuis 1970), 0 = illimité
+  String msg; // message affiché à l'import
+  String connMsg; // message affiché à la connexion
+  String hwids; // identifiants d'appareils autorisés (vide = tous)
+  bool lockSsh; // masque l'utilisateur et le mot de passe SSH
   Map<String, String> extra; // autres paramètres du lien (aid, type, flow, fp...)
 
   Server({
@@ -69,8 +73,19 @@ class Server {
     this.proxy = '',
     this.locked = false,
     this.expires = 0,
+    this.msg = '',
+    this.connMsg = '',
+    this.hwids = '',
+    this.lockSsh = false,
     Map<String, String>? extra,
   }) : extra = extra ?? <String, String>{};
+
+  /// Identifiants d'appareils autorisés (minuscules).
+  List<String> get hwidList => hwids
+      .split(RegExp(r'[\s,;]+'))
+      .map((e) => e.trim().toLowerCase())
+      .where((e) => e.isNotEmpty)
+      .toList();
 
   bool get expired =>
       expires > 0 && DateTime.now().millisecondsSinceEpoch > expires;
@@ -96,6 +111,10 @@ class Server {
         'proxy': proxy,
         'locked': locked,
         'expires': expires,
+        'msg': msg,
+        'connMsg': connMsg,
+        'hwids': hwids,
+        'lockSsh': lockSsh,
         'extra': extra,
       };
 
@@ -120,6 +139,10 @@ class Server {
         proxy: (j['proxy'] ?? '').toString(),
         locked: j['locked'] == true,
         expires: int.tryParse((j['expires'] ?? '0').toString()) ?? 0,
+        msg: (j['msg'] ?? '').toString(),
+        connMsg: (j['connMsg'] ?? '').toString(),
+        hwids: (j['hwids'] ?? '').toString(),
+        lockSsh: j['lockSsh'] == true,
         extra: j['extra'] is Map
             ? (j['extra'] as Map).map((k, v) => MapEntry(k.toString(), v.toString()))
             : null,
@@ -356,7 +379,9 @@ String toLink(Server s, {bool core = false}) {
       'tls': s.sec == 'tls' ? 'tls' : '',
       'sni': s.sni,
     };
-    s.extra.forEach((k, v) => m[k] = v);
+    s.extra.forEach((k, v) {
+      if (k != 'raw' && k != 'dnsfix') m[k] = v;
+    });
     m['allowInsecure'] = s.insecure ? '1' : '0';
     return 'vmess://${_b64e(jsonEncode(m))}';
   }
@@ -383,7 +408,9 @@ String toLink(Server s, {bool core = false}) {
     if (s.hosth.isNotEmpty) q['host'] = s.hosth;
     if (s.sni.isNotEmpty) q['sni'] = s.sni;
     if (s.sec != 'none') q['allowInsecure'] = s.insecure ? '1' : '0';
-    s.extra.forEach((k, v) => q[k] = v);
+    s.extra.forEach((k, v) {
+      if (k != 'raw' && k != 'dnsfix') q[k] = v;
+    });
     final qs = q.entries
         .map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}')
         .join('&');
@@ -407,15 +434,27 @@ String toLink(Server s, {bool core = false}) {
 // ======================= PARTAGE (csophantom://) =======================
 
 /// Crée un lien de partage contenant une ou plusieurs configurations.
-/// [lock] : détails masqués chez le destinataire. [days] : durée de validité (0 = illimitée).
-String exportBundle(List<Server> list, {bool lock = false, int days = 0}) {
-  final exp = days > 0
-      ? DateTime.now().add(Duration(days: days)).millisecondsSinceEpoch
-      : 0;
+/// [lock] : détails masqués chez le destinataire. [lockSsh] : compte SSH masqué.
+/// [expires] : date d'expiration en ms (0 = illimitée). [hwids] : appareils autorisés.
+String exportBundle(
+  List<Server> list, {
+  bool lock = false,
+  bool lockSsh = false,
+  int expires = 0,
+  String name = '',
+  String msg = '',
+  String connMsg = '',
+  String hwids = '',
+}) {
   final items = list.map((s) {
     final j = s.toJson();
     j['locked'] = lock || s.locked;
-    j['expires'] = exp > 0 ? exp : s.expires;
+    j['lockSsh'] = lockSsh || s.lockSsh;
+    j['expires'] = expires > 0 ? expires : s.expires;
+    if (name.isNotEmpty && list.length == 1) j['name'] = name;
+    if (msg.isNotEmpty) j['msg'] = msg;
+    if (connMsg.isNotEmpty) j['connMsg'] = connMsg;
+    if (hwids.trim().isNotEmpty) j['hwids'] = hwids.trim();
     return j;
   }).toList();
   final body = base64Url.encode(utf8.encode(jsonEncode({'v': 1, 's': items})));

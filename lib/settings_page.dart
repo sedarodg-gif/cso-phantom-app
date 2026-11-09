@@ -38,10 +38,10 @@ Widget _glow(Alignment c, double r, Color col) => Positioned.fill(
       ),
     );
 
-class _Page extends StatelessWidget {
+class CsoPage extends StatelessWidget {
   final String title;
   final Widget child;
-  const _Page({required this.title, required this.child});
+  const CsoPage({required this.title, required this.child});
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +81,7 @@ class _Page extends StatelessWidget {
   }
 }
 
-Widget _sTitle(String t) => Padding(
+Widget sTitle(String t) => Padding(
       padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
       child: Row(children: [
         Text(t, style: const TextStyle(color: kCyan, fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: .5)),
@@ -90,7 +90,7 @@ Widget _sTitle(String t) => Padding(
       ]),
     );
 
-Widget _sTile({
+Widget sTile({
   required String title,
   String? sub,
   IconData? icon,
@@ -137,8 +137,8 @@ Widget _sTile({
   );
 }
 
-Widget _sSwitch(String title, String sub, bool v, void Function(bool) on, {IconData? icon}) {
-  return _sTile(
+Widget sSwitch(String title, String sub, bool v, void Function(bool) on, {IconData? icon}) {
+  return sTile(
     title: title,
     sub: sub,
     icon: icon,
@@ -276,20 +276,20 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final h = widget.host;
-    return _Page(
+    return CsoPage(
       title: 'Réglages',
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
         children: [
-          _sTitle('Général'),
-          _sTile(
+          sTitle('Général'),
+          sTile(
             icon: Icons.bubble_chart_outlined,
             title: 'Bouton de connexion',
             sub: 'Couleur, style, animation et taille de la boule',
             trailing: _chev(),
             onTap: () => _push(context, OrbPage(host: h)),
           ),
-          _sTile(
+          sTile(
             icon: Icons.speed_outlined,
             title: 'Unité de vitesse',
             sub: 'Affichage des débits',
@@ -300,32 +300,32 @@ class _SettingsPageState extends State<SettingsPage> {
               if (v != null) _set(() => st.speedUnit = v);
             },
           ),
-          _sTitle('Connexion'),
-          _sSwitch('Mode rapide', 'DNS IPv4 et routage allégé', st.fast, (v) => _set(() => st.fast = v),
+          sTitle('Connexion'),
+          sSwitch('Mode rapide', 'DNS IPv4 et routage allégé', st.fast, (v) => _set(() => st.fast = v),
               icon: Icons.bolt_outlined),
-          _sSwitch('Bloquer QUIC (UDP 443)',
+          sSwitch('Bloquer QUIC (UDP 443)',
               'Force les navigateurs et applis à utiliser TCP. Recommandé : QUIC ne passe pas dans la plupart des tunnels.',
               st.blockQuic, (v) => _set(() => st.blockQuic = v),
               icon: Icons.block_outlined),
-          _sSwitch('Autoriser le réseau local', 'Imprimantes, partage de fichiers : ne passe pas dans le VPN',
+          sSwitch('Autoriser le réseau local', 'Imprimantes, partage de fichiers : ne passe pas dans le VPN',
               st.lan, (v) => _set(() => st.lan = v),
               icon: Icons.lan_outlined),
-          _sTile(
+          sTile(
             icon: Icons.shield_outlined,
             title: 'Comportement du VPN',
             sub: 'DNS, reconnexion automatique, kill switch, applications hors VPN',
             trailing: _chev(),
             onTap: () => _push(context, BehaviorPage(host: h)),
           ),
-          _sTile(
+          sTile(
             icon: Icons.monitor_heart_outlined,
             title: 'Vérification de la connexion',
             sub: 'URL de test, intervalle, délai et Auto Ping',
             trailing: _chev(),
             onTap: () => _push(context, CheckPage(host: h)),
           ),
-          _sTitle('Tunnel'),
-          _sTile(
+          sTitle('Tunnel'),
+          sTile(
             icon: Icons.terminal_outlined,
             title: 'SSH : keep-alive',
             sub: 'Intervalle des messages qui gardent le tunnel SSH ouvert (5 à 120 s)',
@@ -336,56 +336,78 @@ class _SettingsPageState extends State<SettingsPage> {
               if (n != null) _set(() => st.sshKeepAlive = n.clamp(5, 120).toInt());
             },
           ),
-          _sTile(
+          sTile(
+            icon: Icons.call_split,
+            title: 'SSH : connexions parallèles',
+            sub: 'Plusieurs connexions SSH en même temps pour aller plus vite (utilise plusieurs cœurs du téléphone). '
+                'Mets 1 si ton compte SSH n\'accepte qu\'une seule connexion.',
+            trailing: _value('${st.sshPool}'),
+            onTap: () async {
+              final v = await _pick<int>(context, 'Connexions SSH', {1: '1', 2: '2 (recommandé)', 3: '3', 4: '4'}, st.sshPool);
+              if (v != null) _set(() => st.sshPool = v);
+            },
+          ),
+          sTile(
+            icon: Icons.memory,
+            title: 'Tampon de transfert',
+            sub: 'Mémoire par connexion dans le moteur Xray : plus grand = débit plus élevé.',
+            trailing: _value(st.bufferKb == 0 ? 'Auto' : '${st.bufferKb} Ko'),
+            onTap: () async {
+              final v = await _pick<int>(context, 'Tampon de transfert',
+                  {0: 'Auto (réglage d\'origine)', 256: '256 Ko', 512: '512 Ko (recommandé)', 1024: '1024 Ko'}, st.bufferKb);
+              if (v != null) _set(() => st.bufferKb = v);
+            },
+          ),
+          sTile(
             icon: Icons.hub_outlined,
             title: 'V2Ray / Xray',
             sub: 'Mux, SNI, Host, allowInsecure et transport se règlent dans chaque serveur (Modifier).',
           ),
-          _sTitle('Outils'),
-          _sTile(
+          sTitle('Outils'),
+          sTile(
             icon: Icons.my_location_outlined,
             title: "Chasseur d'IP",
             sub: 'Ton IP publique et résolution de domaines',
             trailing: _chev(),
             onTap: () => _push(context, const IpPage()),
           ),
-          _sTile(
+          sTile(
             icon: Icons.fact_check_outlined,
             title: 'Vérificateur de réponse',
             sub: 'Teste une URL : code, temps et en-têtes',
             trailing: _chev(),
             onTap: () => _push(context, const ResponsePage()),
           ),
-          _sTile(
+          sTile(
             icon: Icons.smartphone_outlined,
             title: 'Hardware ID',
             sub: "Identifiant de cet appareil",
             trailing: _chev(),
             onTap: _hardwareId,
           ),
-          _sTile(
+          sTile(
             icon: Icons.receipt_long_outlined,
             title: 'Journal',
             sub: 'Événements de connexion et erreurs',
             trailing: _chev(),
             onTap: () => _push(context, LogPage(host: h)),
           ),
-          _sTitle('Données'),
-          _sTile(
+          sTitle('Données'),
+          sTile(
             icon: Icons.ios_share,
             title: 'Exporter toutes les configurations',
             sub: 'Lien, fichier ou partage',
             trailing: _chev(),
             onTap: h.exportAll,
           ),
-          _sTile(
+          sTile(
             icon: Icons.restart_alt,
             title: 'Réinitialiser les réglages',
             sub: 'Revenir aux valeurs par défaut',
             onTap: _reset,
           ),
-          _sTitle('À propos'),
-          _sTile(
+          sTitle('À propos'),
+          sTile(
             icon: Icons.info_outline,
             title: 'CSO PHANTOM V4',
             sub: 'Moteurs : Xray-core (VLESS, VMess, Trojan, Shadowsocks) et SSH',
@@ -425,7 +447,7 @@ class _OrbPageState extends State<OrbPage> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    return _Page(
+    return CsoPage(
       title: 'Bouton de connexion',
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
@@ -442,7 +464,7 @@ class _OrbPageState extends State<OrbPage> with SingleTickerProviderStateMixin {
               ),
             ),
           ),
-          _sTitle('Couleur'),
+          sTitle('Couleur'),
           Wrap(
             spacing: 14,
             runSpacing: 14,
@@ -480,7 +502,7 @@ class _OrbPageState extends State<OrbPage> with SingleTickerProviderStateMixin {
                 ),
             ],
           ),
-          _sTitle('Style'),
+          sTitle('Style'),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -493,8 +515,8 @@ class _OrbPageState extends State<OrbPage> with SingleTickerProviderStateMixin {
                 ),
             ],
           ),
-          _sTitle('Animation et taille'),
-          _sSwitch('Animation', 'Vagues, bulles et anneau en mouvement. La désactiver économise la batterie.',
+          sTitle('Animation et taille'),
+          sSwitch('Animation', 'Vagues, bulles et anneau en mouvement. La désactiver économise la batterie.',
               st.orbAnim, (v) => _set(() => st.orbAnim = v)),
           Container(
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
@@ -552,13 +574,13 @@ class _BehaviorPageState extends State<BehaviorPage> {
 
   @override
   Widget build(BuildContext context) {
-    return _Page(
+    return CsoPage(
       title: 'Comportement du VPN',
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
         children: [
-          _sTitle('DNS'),
-          _sTile(
+          sTitle('DNS'),
+          sTile(
             icon: Icons.dns_outlined,
             title: 'Serveur DNS',
             sub: 'Les requêtes passent chiffrées (DoH) dans le tunnel',
@@ -569,7 +591,7 @@ class _BehaviorPageState extends State<BehaviorPage> {
             },
           ),
           if (st.dns == 'custom')
-            _sTile(
+            sTile(
               icon: Icons.edit_outlined,
               title: 'DNS personnalisé',
               sub: st.dnsCustom.isEmpty ? 'Ex. https://dns.exemple.com/dns-query' : st.dnsCustom,
@@ -578,11 +600,11 @@ class _BehaviorPageState extends State<BehaviorPage> {
                 if (v != null) _set(() => st.dnsCustom = v);
               },
             ),
-          _sTitle('Reconnexion'),
-          _sSwitch('Reconnexion automatique', 'Relance le VPN si la connexion tombe sans que tu l\'aies coupée',
+          sTitle('Reconnexion'),
+          sSwitch('Reconnexion automatique', 'Relance le VPN si la connexion tombe sans que tu l\'aies coupée',
               st.autoReconnect, (v) => _set(() => st.autoReconnect = v),
               icon: Icons.sync),
-          _sTile(
+          sTile(
             icon: Icons.repeat,
             title: 'Nombre de tentatives',
             sub: 'Avant d\'abandonner',
@@ -592,8 +614,8 @@ class _BehaviorPageState extends State<BehaviorPage> {
               if (v != null) _set(() => st.reconnectTries = v);
             },
           ),
-          _sTitle('Protection'),
-          _sTile(
+          sTitle('Protection'),
+          sTile(
             icon: Icons.gpp_maybe_outlined,
             title: 'Kill switch',
             sub: 'Android le gère lui-même : ouvre les réglages VPN, touche l\'engrenage de CSO Phantom, '
@@ -601,7 +623,7 @@ class _BehaviorPageState extends State<BehaviorPage> {
             trailing: _chev(),
             onTap: _vpnSettings,
           ),
-          _sTile(
+          sTile(
             icon: Icons.apps_outlined,
             title: 'Applications hors VPN',
             sub: st.excludedApps.isEmpty
@@ -673,7 +695,7 @@ class _AppsPageState extends State<AppsPage> {
     final shown = _apps
         .where((a) => q.isEmpty || a['name']!.toLowerCase().contains(q) || a['pkg']!.toLowerCase().contains(q))
         .toList();
-    return _Page(
+    return CsoPage(
       title: 'Applications hors VPN',
       child: Column(
         children: [
@@ -713,7 +735,7 @@ class _AppsPageState extends State<AppsPage> {
                           final a = shown[i];
                           final pkg = a['pkg']!;
                           final on = st.excludedApps.contains(pkg);
-                          return _sTile(
+                          return sTile(
                             title: a['name']!,
                             sub: pkg,
                             onTap: () {
@@ -770,12 +792,12 @@ class _CheckPageState extends State<CheckPage> {
 
   @override
   Widget build(BuildContext context) {
-    return _Page(
+    return CsoPage(
       title: 'Vérification de la connexion',
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
         children: [
-          _sTile(
+          sTile(
             icon: Icons.link,
             title: 'URL de test',
             sub: st.checkUrl,
@@ -784,7 +806,7 @@ class _CheckPageState extends State<CheckPage> {
               if (v != null && v.startsWith('http')) _set(() => st.checkUrl = v);
             },
           ),
-          _sTile(
+          sTile(
             icon: Icons.timer_outlined,
             title: 'Auto Ping : intervalle',
             sub: 'Teste régulièrement la connexion et la garde active',
@@ -795,7 +817,7 @@ class _CheckPageState extends State<CheckPage> {
               if (v != null) _set(() => st.checkInterval = v);
             },
           ),
-          _sTile(
+          sTile(
             icon: Icons.hourglass_bottom,
             title: 'Délai maximum',
             sub: 'Au-delà, le test est considéré comme échoué',
@@ -805,7 +827,7 @@ class _CheckPageState extends State<CheckPage> {
               if (v != null) _set(() => st.checkTimeout = v);
             },
           ),
-          _sTile(
+          sTile(
             icon: Icons.error_outline,
             title: 'Échecs avant action',
             sub: 'Nombre de tests ratés de suite',
@@ -815,7 +837,7 @@ class _CheckPageState extends State<CheckPage> {
               if (v != null) _set(() => st.checkFails = v);
             },
           ),
-          _sTile(
+          sTile(
             icon: Icons.flash_on_outlined,
             title: 'Action',
             sub: 'Que faire quand la connexion ne répond plus',
@@ -910,12 +932,12 @@ class _IpPageState extends State<IpPage> {
 
   @override
   Widget build(BuildContext context) {
-    return _Page(
+    return CsoPage(
       title: "Chasseur d'IP",
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
         children: [
-          _sTitle('Mon IP publique'),
+          sTitle('Mon IP publique'),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: glass(r: 18),
@@ -961,7 +983,7 @@ class _IpPageState extends State<IpPage> {
               ],
             ),
           ),
-          _sTitle('Résoudre un domaine'),
+          sTitle('Résoudre un domaine'),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: glass(r: 18),
@@ -1093,7 +1115,7 @@ class _ResponsePageState extends State<ResponsePage> {
 
   @override
   Widget build(BuildContext context) {
-    return _Page(
+    return CsoPage(
       title: 'Vérificateur de réponse',
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
@@ -1134,7 +1156,7 @@ class _ResponsePageState extends State<ResponsePage> {
               child: Text(_err, style: const TextStyle(color: kBad)),
             ),
           if (_status.isNotEmpty) ...[
-            _sTitle('Réponse'),
+            sTitle('Réponse'),
             Container(
               padding: const EdgeInsets.all(14),
               decoration: glass(r: 18),
@@ -1190,7 +1212,7 @@ class _LogPageState extends State<LogPage> {
   @override
   Widget build(BuildContext context) {
     final lines = widget.host.logs().reversed.toList();
-    return _Page(
+    return CsoPage(
       title: 'Journal',
       child: Column(
         children: [

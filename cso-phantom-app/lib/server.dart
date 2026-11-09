@@ -379,7 +379,9 @@ String toLink(Server s, {bool core = false}) {
       'tls': s.sec == 'tls' ? 'tls' : '',
       'sni': s.sni,
     };
-    s.extra.forEach((k, v) => m[k] = v);
+    s.extra.forEach((k, v) {
+      if (k != 'raw' && k != 'dnsfix') m[k] = v;
+    });
     m['allowInsecure'] = s.insecure ? '1' : '0';
     return 'vmess://${_b64e(jsonEncode(m))}';
   }
@@ -406,7 +408,9 @@ String toLink(Server s, {bool core = false}) {
     if (s.hosth.isNotEmpty) q['host'] = s.hosth;
     if (s.sni.isNotEmpty) q['sni'] = s.sni;
     if (s.sec != 'none') q['allowInsecure'] = s.insecure ? '1' : '0';
-    s.extra.forEach((k, v) => q[k] = v);
+    s.extra.forEach((k, v) {
+      if (k != 'raw' && k != 'dnsfix') q[k] = v;
+    });
     final qs = q.entries
         .map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}')
         .join('&');

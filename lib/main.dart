@@ -10,6 +10,7 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'server.dart';
+import 'export_page.dart';
 import 'settings.dart';
 import 'settings_page.dart';
 import 'ssh_engine.dart';
@@ -148,15 +149,18 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
         final ss = o['streamSettings'];
         if (ss is Map) {
           final tls = ss['tlsSettings'];
+          final hostH = s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '';
           if (tls is Map) {
             tls['allowInsecure'] = s.insecure;
-            final cur = (tls['serverName'] ?? '').toString();
-            if (cur.isEmpty) {
-              final sn = s.sni.isNotEmpty
-                  ? s.sni
-                  : (s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '');
-              if (sn.isNotEmpty) tls['serverName'] = sn;
-            }
+            // comme v2rayNG : SNI saisi, sinon l'en-tête Host, sinon on laisse le moteur décider
+            final sn = s.sni.isNotEmpty ? s.sni : hostH;
+            if (sn.isNotEmpty) tls['serverName'] = sn;
+          }
+          final ws = ss['wsSettings'];
+          if (ws is Map && hostH.isNotEmpty) {
+            final hd = ws['headers'] is Map ? Map<String, dynamic>.from(ws['headers'] as Map) : <String, dynamic>{};
+            hd['Host'] = hostH;
+            ws['headers'] = hd;
           }
         }
         if (s.mux && proto != 'shadowsocks' && (s.extra['flow'] ?? '').isEmpty) {
@@ -191,7 +195,7 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
       final d = m['dns'];
       if (d is Map) d['queryStrategy'] = 'UseIPv4';
     }
-    final dnsList = st.dnsServers();
+    final dnsList = st.dnsServers() ?? (s.extra['dnsfix'] == '1' ? kDnsPresets['cloudflare'] : null);
     if (dnsList != null && dnsList.isNotEmpty) {
       final d = m['dns'];
       if (d is Map) {
@@ -200,32 +204,54 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
         m['dns'] = {'servers': dnsList, 'queryStrategy': 'UseIPv4'};
       }
     }
+    _applyPolicy(m, st.bufferKb);
     return jsonEncode(m);
   } catch (_) {
     return cfg;
   }
 }
 
+/// Tampon par connexion : plus grand = meilleur débit sur les gros transferts.
+void _applyPolicy(Map<String, dynamic> m, int kb) {
+  if (kb <= 0) return;
+  final pol = m['policy'] is Map ? Map<String, dynamic>.from(m['policy'] as Map) : <String, dynamic>{};
+  final lv = pol['levels'] is Map ? Map<String, dynamic>.from(pol['levels'] as Map) : <String, dynamic>{};
+  final l0 = lv['0'] is Map ? Map<String, dynamic>.from(lv['0'] as Map) : <String, dynamic>{};
+  l0['bufferSize'] = kb;
+  lv['0'] = l0;
+  pol['levels'] = lv;
+  m['policy'] = pol;
+}
+
 /// SSH : on réutilise l'habillage Xray (TUN, DNS...) mais la sortie « proxy »
 /// devient le proxy SOCKS5 local qui passe par le tunnel SSH.
-String buildSshConfig(String base, int socksPort, List<String> ips, {List<String>? dns}) {
+String buildSshConfig(String base, List<int> ports, List<String> ips, {List<String>? dns, int bufferKb = 0}) {
   final m = Map<String, dynamic>.from(jsonDecode(base) as Map);
   final outs = List<dynamic>.from((m['outbounds'] as List?) ?? <dynamic>[]);
-  final proxy = <String, dynamic>{
-    'tag': 'proxy',
-    'protocol': 'socks',
-    'settings': {
-      'servers': [
-        {'address': '127.0.0.1', 'port': socksPort},
-      ],
-    },
-  };
+  final pool = ports.length > 1;
+  Map<String, dynamic> socks(String tag, int port) => {
+        'tag': tag,
+        'protocol': 'socks',
+        'settings': {
+          'servers': [
+            {'address': '127.0.0.1', 'port': port},
+          ],
+        },
+      };
   var idx = outs.indexWhere((o) => o is Map && o['tag'] == 'proxy');
   if (idx < 0) idx = 0;
-  if (outs.isEmpty) {
-    outs.add(proxy);
+  if (!pool) {
+    final proxy = socks('proxy', ports.first);
+    if (outs.isEmpty) {
+      outs.add(proxy);
+    } else {
+      outs[idx] = proxy;
+    }
   } else {
-    outs[idx] = proxy;
+    if (outs.isNotEmpty) outs.removeAt(idx);
+    for (var i = 0; i < ports.length; i++) {
+      outs.add(socks('ssh-p${i + 1}', ports[i]));
+    }
   }
   outs.addAll(<Map<String, dynamic>>[
     {'tag': 'ssh-direct', 'protocol': 'freedom', 'settings': <String, dynamic>{}},
@@ -248,7 +274,27 @@ String buildSshConfig(String base, int socksPort, List<String> ips, {List<String
   // DNS UDP -> résolveur interne (DoH via le tunnel) ; autre UDP bloqué (SSH = TCP seulement)
   pre.add({'type': 'field', 'network': 'udp', 'port': '53', 'outboundTag': 'ssh-dns'});
   pre.add({'type': 'field', 'network': 'udp', 'outboundTag': 'ssh-block'});
-  routing['rules'] = [...pre, ...rules];
+  if (pool) {
+    // répartit les connexions TCP sur plusieurs tunnels SSH
+    final conv = <dynamic>[];
+    for (final r in rules) {
+      if (r is Map && r['outboundTag'] == 'proxy') {
+        final c = Map<String, dynamic>.from(r);
+        c.remove('outboundTag');
+        c['balancerTag'] = 'cso-bal';
+        conv.add(c);
+      } else {
+        conv.add(r);
+      }
+    }
+    conv.add({'type': 'field', 'network': 'tcp,udp', 'balancerTag': 'cso-bal'});
+    routing['balancers'] = [
+      {'tag': 'cso-bal', 'selector': ['ssh-p'], 'strategy': {'type': 'random'}},
+    ];
+    routing['rules'] = [...pre, ...conv];
+  } else {
+    routing['rules'] = [...pre, ...rules];
+  }
   routing['domainStrategy'] = 'AsIs';
   m['routing'] = routing;
 
@@ -258,6 +304,7 @@ String buildSshConfig(String base, int socksPort, List<String> ips, {List<String
     'servers': doh.isNotEmpty ? doh : ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'],
     'queryStrategy': 'UseIPv4',
   };
+  _applyPolicy(m, bufferKb);
   return jsonEncode(m);
 }
 
@@ -715,7 +762,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   int _conns = 0;
 
   // SSH
-  SshEngine? _ssh;
+  final List<SshEngine> _sshEngines = <SshEngine>[];
+  final Map<int, List<double>> _poolStat = <int, List<double>>{};
   bool _sshMode = false;
 
   // trafic
@@ -755,13 +803,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void initState() {
     super.initState();
     _load();
+    // un VPN resté actif d'une session précédente (appli fermée) ne doit pas rester orphelin
+    _killVpn();
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
     _timeout?.cancel();
-    _ssh?.stop();
+    for (final e in _sshEngines) {
+      e.stop();
+    }
     _spin.dispose();
     super.dispose();
   }
@@ -889,6 +941,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   // ---------- VPN ----------
+  /// Coupe le service VPN natif (notification « Connected »), quoi qu'il arrive.
+  Future<void> _killVpn() async {
+    try {
+      await _ensureInit();
+      await _vless.stopVless();
+    } catch (_) {}
+  }
+
   Future<void> _ensureInit() async {
     if (_inited) return;
     await _vless.initializeVless(
@@ -902,7 +962,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final parsed = FlutterVless.parse(toLink(s, core: true));
     return (
       remark: parsed.remark,
-      config: tuneConfig(parsed.getFullConfiguration(), s, _st),
+      config: s.extra['raw'] == '1'
+          ? parsed.getFullConfiguration()
+          : tuneConfig(parsed.getFullConfiguration(), s, _st),
     );
   }
 
@@ -960,15 +1022,26 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     setState(() {});
   }
 
-  void _onSshEvent(Map<String, dynamic> m) {
+  void _onSshEvent(int i, Map<String, dynamic> m) {
     if (!mounted) return;
     final t = m['t'];
     if (t == 'stat') {
-      _ulTotal = (m['up'] as num).toDouble();
-      _dlTotal = (m['down'] as num).toDouble();
+      _poolStat[i] = [(m['up'] as num).toDouble(), (m['down'] as num).toDouble()];
+      var u = 0.0, d = 0.0;
+      for (final v in _poolStat.values) {
+        u += v[0];
+        d += v[1];
+      }
+      _ulTotal = u;
+      _dlTotal = d;
     } else if (t == 'log') {
       _log('SSH : ${m['msg'] ?? ''}');
     } else if (t == 'closed' || t == 'error') {
+      // une connexion supplémentaire qui tombe n'arrête pas le VPN
+      if (i > 0 && _sshEngines.length > 1) {
+        _log('SSH #${i + 1} fermée');
+        return;
+      }
       if (_state != 'off') {
         final msg = (m['msg'] ?? '').toString();
         _toast(msg.isEmpty ? 'Connexion SSH perdue' : 'Connexion SSH perdue : $msg');
@@ -978,8 +1051,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   void _stopSsh() {
-    _ssh?.stop();
-    _ssh = null;
+    for (final e in _sshEngines) {
+      e.stop();
+    }
+    _sshEngines.clear();
+    _poolStat.clear();
     _sshMode = false;
   }
 
@@ -1039,6 +1115,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
     Future<void>.delayed(const Duration(seconds: 2), _checkNet);
+    final cm = _selected?.connMsg ?? '';
+    if (cm.isNotEmpty) {
+      Future<void>.delayed(const Duration(milliseconds: 300), () {
+        if (mounted && _state == 'on') _showInfo('Message', cm);
+      });
+    }
+  }
+
+  void _showInfo(String title, String text) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF10121A),
+        title: Text(title),
+        content: SingleChildScrollView(child: Text(text)),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
   }
 
   void _tick() {
@@ -1098,12 +1192,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   /// Requête HTTP réelle (passe par le tunnel) : durée en ms, ou -1 si échec.
-  Future<int> _httpCheck() async {
-    final to = Duration(seconds: _st.checkTimeout < 3 ? 3 : _st.checkTimeout);
+  Future<int> _httpCheck([String? url, int? secs]) async {
+    final t = secs ?? _st.checkTimeout;
+    final to = Duration(seconds: t < 3 ? 3 : t);
     final client = HttpClient()..connectionTimeout = to;
     final sw = Stopwatch()..start();
     try {
-      final req = await client.getUrl(Uri.parse(_st.checkUrl)).timeout(to);
+      final req = await client.getUrl(Uri.parse(url ?? _st.checkUrl)).timeout(to);
       req.headers.set('Cache-Control', 'no-cache');
       final res = await req.close().timeout(to);
       await res.drain<void>().timeout(to);
@@ -1117,11 +1212,19 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   /// Vérifie que le tunnel donne vraiment accès à Internet.
+  String _diag = ''; // dernier diagnostic réseau (affiché sous la pastille)
+  int _heal = 0; // étapes d'auto-réparation déjà tentées pour cette connexion
+
   Future<void> _checkNet({bool quiet = false}) async {
     if (_state != 'on' || _checking) return;
     _checking = true;
     if (!quiet && mounted) setState(() => _ping = null);
     var d = await _httpCheck();
+    if (d <= 0 && _state == 'on') {
+      // le tunnel vient peut-être juste de s'ouvrir : un second essai avant de conclure
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (_state == 'on') d = await _httpCheck();
+    }
     if (d <= 0 && !_sshMode) {
       try {
         final dynamic r = await _vless.getConnectedServerDelay();
@@ -1130,10 +1233,44 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         d = -1;
       }
     }
+    var healed = false;
+    if (d <= 0 && !_sshMode && _state == 'on') {
+      // diagnostic : le tunnel répond-il par adresse IP (sans DNS) ?
+      final ip = await _httpCheck('https://1.1.1.1/cdn-cgi/trace', 6);
+      final srv = _selected;
+      if (ip > 0) {
+        _diag = 'Tunnel ouvert, mais les noms de domaine ne se résolvent pas (DNS).';
+        _log('Diagnostic : le tunnel répond par IP (${ip}ms) mais pas par nom de domaine : problème DNS');
+        d = ip;
+        if (srv != null && srv.extra['dnsfix'] != '1' && _heal < 1) {
+          _heal = 1;
+          srv.extra['dnsfix'] = '1';
+          _save();
+          _log('Réparation : DNS Cloudflare imposé, reconnexion');
+          healed = true;
+        }
+      } else {
+        _diag = 'Tunnel ouvert, mais aucune donnée ne revient : compte expiré/limité, mauvais SNI/Host ou serveur hors service.';
+        _log('Diagnostic : aucune réponse du tunnel, même par IP');
+        if (srv != null && srv.extra['raw'] != '1' && _heal < 2) {
+          _heal = 2;
+          srv.extra['raw'] = '1';
+          _save();
+          _log('Réparation : configuration brute (sans mes réglages), reconnexion');
+          healed = true;
+        } else if (srv != null && srv.extra['raw'] == '1') {
+          srv.extra.remove('raw');
+          _save();
+          _log('Même la configuration brute échoue : le compte ou le serveur ne répond pas');
+        }
+      }
+    }
     _checking = false;
     if (!mounted || _state != 'on') return;
+    if (d > 0 && _diag.isNotEmpty && !healed) _diag = '';
     setState(() => _ping = d > 0 ? d : -1);
-    _log(d > 0 ? 'Test de connexion : $d ms' : 'Test de connexion : échec');
+    _log(d > 0 ? 'HTTP Ping 200 OK (${d}ms)' : 'Test de connexion : échec');
+    if (healed) _reconnect('réparation automatique');
   }
 
   /// Auto Ping : test régulier, avec action après plusieurs échecs de suite.
@@ -1171,7 +1308,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       return;
     }
     _userStop = false;
-    if (!auto) _retries = 0;
+    if (!auto) {
+      _retries = 0;
+      _heal = 0;
+    }
     _log('Connexion...');
     final s = _selected;
     if (s == null) {
@@ -1183,6 +1323,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _toast('Cette configuration a expiré');
       return;
     }
+    if (s.hwidList.isNotEmpty) {
+      String id = '';
+      try {
+        id = ((await _shareCh.invokeMethod<String>('deviceId')) ?? '').toLowerCase();
+      } catch (_) {}
+      if (id.isEmpty || !s.hwidList.contains(id)) {
+        _toast("Cette configuration n'est pas autorisée sur cet appareil");
+        return;
+      }
+    }
+    await _killVpn(); // repart d'un service propre
     if (s.type == 'ssh') {
       await _connectSsh(s);
       return;
@@ -1205,6 +1356,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _timeout = Timer(const Duration(seconds: 25), () {
         if (_state == 'connecting' && mounted) {
           setState(() => _state = 'off');
+          _killVpn();
           _toast('Délai dépassé : vérifie ton compte');
         }
       });
@@ -1218,6 +1370,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } catch (e) {
       _timeout?.cancel();
       if (mounted) setState(() => _state = 'off');
+      _killVpn();
       _toast('Échec : $e');
     }
   }
@@ -1229,13 +1382,37 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _sshMode = true;
     });
     try {
-      final eng = SshEngine(_onSshEvent);
-      _ssh = eng;
-      await eng.start(_sshCfg(s));
+      final n = _st.sshPool.clamp(1, 4).toInt();
+      final scfg = _sshCfg(s);
+      final engines = <SshEngine>[
+        for (var i = 0; i < n; i++) SshEngine((Map<String, dynamic> m) => _onSshEvent(i, m)),
+      ];
+      _sshEngines
+        ..clear()
+        ..addAll(engines);
+      _poolStat.clear();
+      await engines[0].start(scfg);
+      var okList = <SshEngine>[engines[0]];
+      if (n > 1) {
+        final res = await Future.wait<bool>([
+          for (var i = 1; i < n; i++)
+            engines[i].start(scfg).then<bool>((_) => true).catchError((Object _) => false),
+        ]);
+        for (var i = 1; i < n; i++) {
+          if (res[i - 1]) {
+            okList.add(engines[i]);
+          } else {
+            engines[i].stop();
+          }
+        }
+        _log('SSH : ${okList.length}/$n connexions actives');
+      }
+      final ips = <String>{for (final e in okList) ...e.ips}.toList();
+      final ports = [for (final e in okList) e.port];
       final scaffold = FlutterVless.parse(
         'vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?type=tcp&security=none#ssh',
       );
-      final cfg = buildSshConfig(scaffold.getFullConfiguration(), eng.port, eng.ips, dns: _st.dnsServers());
+      final cfg = buildSshConfig(scaffold.getFullConfiguration(), ports, ips, dns: _st.dnsServers(), bufferKb: _st.bufferKb);
       await _ensureInit();
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -1249,6 +1426,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         if (_state == 'connecting' && mounted) {
           _stopSsh();
           setState(() => _state = 'off');
+          _killVpn();
           _toast('Délai dépassé pendant le démarrage du VPN');
         }
       });
@@ -1263,6 +1441,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _timeout?.cancel();
       _stopSsh();
       if (mounted) setState(() => _state = 'off');
+      _killVpn();
       _toast('SSH : $e');
     }
   }
@@ -1275,7 +1454,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
       _toast('Test SSH en cours...');
       final sw = Stopwatch()..start();
-      final eng = SshEngine((_) {});
+      final eng = SshEngine((Map<String, dynamic> _) {});
       var ms = -1;
       String err = '';
       try {
@@ -1339,6 +1518,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   void _doImport(String text) {
     var ok = 0, bad = 0, warn = 0;
+    final notes = <String>{};
     for (final t in text.split(RegExp(r'\s+'))) {
       if (!t.contains('://')) continue;
       final bundle = parseBundle(t);
@@ -1347,6 +1527,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           _servers.add(s);
           _selId ??= s.id;
           ok++;
+          if (s.msg.isNotEmpty) notes.add(s.msg);
         }
         continue;
       }
@@ -1374,6 +1555,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (bad > 0) msg += ' · $bad ignoré(s)';
     if (warn > 0) msg += " · plugin obfs non pris en charge (testez le serveur)";
     _toast(msg);
+    if (notes.isNotEmpty) _showInfo('Message', notes.join('\n\n'));
   }
 
   void _openImport() {
@@ -1427,11 +1609,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  String _shareText(List<Server> list, bool lock, int days) =>
-      exportBundle(list, lock: lock, days: days);
-
-  Future<void> _saveFile(List<Server> list, bool lock, int days) async {
-    final txt = _shareText(list, lock, days);
+  Future<void> _saveText(String txt) async {
     final stamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     try {
       final ok = await _shareCh.invokeMethod<bool>('saveFile', {
@@ -1459,98 +1637,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _toast('Rien à partager');
       return;
     }
-    if (list.any((s) => s.locked)) {
+    if (list.any((s) => s.locked || s.lockSsh)) {
       _toast('Une configuration verrouillée ne peut pas être repartagée');
       return;
     }
-    var lock = false;
-    var days = 0;
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF10121A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => ExportPage(
+        list: list,
+        onCopy: (t) => _copy(t),
+        onShare: (t) => _share(t),
+        onSaveFile: (t) => _saveText(t),
       ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => Padding(
-          padding: const EdgeInsets.fromLTRB(18, 20, 18, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                list.length == 1 ? 'Partager « ${list.first.name} »' : 'Partager ${list.length} configurations',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Verrouiller'),
-                subtitle: const Text(
-                  "Le destinataire peut se connecter mais ne voit pas les identifiants ni les réglages. "
-                  "C'est un simple masquage dans l'appli, pas un chiffrement.",
-                  style: TextStyle(fontSize: 12, color: kMute),
-                ),
-                value: lock,
-                activeColor: kRed,
-                onChanged: (v) => setS(() => lock = v),
-              ),
-              const SizedBox(height: 4),
-              const Text('Validité', style: TextStyle(color: kMute, fontSize: 13)),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                children: [
-                  for (final d in const [0, 1, 3, 7, 15, 30])
-                    ChoiceChip(
-                      label: Text(d == 0 ? 'Illimitée' : '$d j'),
-                      selected: days == d,
-                      onSelected: (_) => setS(() => days = d),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Le lien contient les identifiants : ne le donne qu\'aux personnes de confiance.',
-                style: TextStyle(fontSize: 12, color: kMute),
-              ),
-              const SizedBox(height: 14),
-              Row(children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _copy(_shareText(list, lock, days));
-                    },
-                    child: const Text('Copier'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _saveFile(list, lock, days);
-                    },
-                    child: const Text('Fichier'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _share(_shareText(list, lock, days));
-                    },
-                    child: const Text('Partager'),
-                  ),
-                ),
-              ]),
-            ],
-          ),
-        ),
-      ),
-    );
+    ));
   }
 
   void _delete(Server s) {
@@ -1856,8 +1954,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } else if (p > 0) {
       net = _chip(Icons.check_circle_outline, 'Internet OK', kGreen);
     } else {
-      net = _chip(Icons.error_outline, "Pas d'accès Internet", kAmber);
-      hint = s != null && s.type == 'ssh'
+      net = _chip(Icons.error_outline, 'Connecté sans Internet', kBad);
+      hint = _diag.isNotEmpty
+          ? _diag
+          : s != null && s.type == 'ssh'
           ? 'Vérifie le payload / SNI / proxy du serveur SSH (touche ici pour retester)'
           : 'Vérifie SNI / Host / TLS dans le serveur (touche ici pour retester)';
     }
@@ -2171,7 +2271,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           Row(children: [
             _act(Icons.speed, 'Tester', () => _testServer(s)),
             if (!s.locked) _act(Icons.edit_outlined, 'Modifier', () => _openForm(s)),
-            if (!s.locked) _act(Icons.ios_share, 'Partager', () => _openShare([s])),
+            if (!s.locked && !s.lockSsh) _act(Icons.ios_share, 'Partager', () => _openShare([s])),
             _act(Icons.delete_outline, 'Supprimer', () => _delete(s)),
           ]),
         ],
@@ -2520,7 +2620,8 @@ class _ServerFormState extends State<ServerForm> {
       setState(() => err = 'Mot de passe obligatoire');
       return;
     }
-    if (type == 'ssh' && user.text.trim().isEmpty) {
+    final keepSsh = widget.server?.lockSsh == true && type == 'ssh';
+    if (type == 'ssh' && !keepSsh && user.text.trim().isEmpty) {
       setState(() => err = 'Utilisateur obligatoire');
       return;
     }
@@ -2534,8 +2635,8 @@ class _ServerFormState extends State<ServerForm> {
       host: h,
       port: p,
       uuid: v('uuid') ? uuid.text.trim() : '',
-      user: v('user') ? user.text.trim() : '',
-      pass: v('pass') ? pass.text.trim() : '',
+      user: keepSsh ? old!.user : (v('user') ? user.text.trim() : ''),
+      pass: keepSsh ? old!.pass : (v('pass') ? pass.text.trim() : ''),
       method: v('method') ? method : 'aes-256-gcm',
       net: v('net') ? net : 'tcp',
       path: v('path') ? path.text.trim() : '',
@@ -2547,6 +2648,10 @@ class _ServerFormState extends State<ServerForm> {
       payload: isSsh ? payload.text.trim() : '',
       proxy: isSsh ? proxy.text.trim() : '',
       locked: false,
+      msg: old?.msg ?? '',
+      connMsg: old?.connMsg ?? '',
+      hwids: old?.hwids ?? '',
+      lockSsh: old?.lockSsh ?? false,
       expires: old?.expires ?? 0,
       extra: (old != null && old.type == type)
           ? Map<String, String>.from(old.extra)
@@ -2593,8 +2698,13 @@ class _ServerFormState extends State<ServerForm> {
               Expanded(flex: 1, child: _field('Port', port, num: true)),
             ]),
             if (v('uuid')) _field('UUID', uuid),
-            if (v('user')) _field('Utilisateur', user),
-            if (v('pass')) _field('Mot de passe', pass),
+            if (v('user') && widget.server?.lockSsh != true) _field('Utilisateur', user),
+            if (v('pass') && widget.server?.lockSsh != true) _field('Mot de passe', pass),
+            if (widget.server?.lockSsh == true && type == 'ssh')
+              const Padding(
+                padding: EdgeInsets.only(bottom: 10),
+                child: Text('Compte SSH verrouillé : identifiants masqués.', style: TextStyle(color: kMute)),
+              ),
             if (v('method'))
               _drop('Chiffrement', method, const {
                 'aes-256-gcm': 'aes-256-gcm',

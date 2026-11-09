@@ -149,15 +149,18 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
         final ss = o['streamSettings'];
         if (ss is Map) {
           final tls = ss['tlsSettings'];
+          final hostH = s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '';
           if (tls is Map) {
             tls['allowInsecure'] = s.insecure;
-            final cur = (tls['serverName'] ?? '').toString();
-            if (cur.isEmpty) {
-              final sn = s.sni.isNotEmpty
-                  ? s.sni
-                  : (s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '');
-              if (sn.isNotEmpty) tls['serverName'] = sn;
-            }
+            // comme v2rayNG : SNI saisi, sinon l'en-tête Host, sinon on laisse le moteur décider
+            final sn = s.sni.isNotEmpty ? s.sni : hostH;
+            if (sn.isNotEmpty) tls['serverName'] = sn;
+          }
+          final ws = ss['wsSettings'];
+          if (ws is Map && hostH.isNotEmpty) {
+            final hd = ws['headers'] is Map ? Map<String, dynamic>.from(ws['headers'] as Map) : <String, dynamic>{};
+            hd['Host'] = hostH;
+            ws['headers'] = hd;
           }
         }
         if (s.mux && proto != 'shadowsocks' && (s.extra['flow'] ?? '').isEmpty) {
@@ -192,7 +195,7 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
       final d = m['dns'];
       if (d is Map) d['queryStrategy'] = 'UseIPv4';
     }
-    final dnsList = st.dnsServers();
+    final dnsList = st.dnsServers() ?? (s.extra['dnsfix'] == '1' ? kDnsPresets['cloudflare'] : null);
     if (dnsList != null && dnsList.isNotEmpty) {
       final d = m['dns'];
       if (d is Map) {
@@ -800,6 +803,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void initState() {
     super.initState();
     _load();
+    // un VPN resté actif d'une session précédente (appli fermée) ne doit pas rester orphelin
+    _killVpn();
   }
 
   @override
@@ -936,6 +941,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   // ---------- VPN ----------
+  /// Coupe le service VPN natif (notification « Connected »), quoi qu'il arrive.
+  Future<void> _killVpn() async {
+    try {
+      await _ensureInit();
+      await _vless.stopVless();
+    } catch (_) {}
+  }
+
   Future<void> _ensureInit() async {
     if (_inited) return;
     await _vless.initializeVless(
@@ -949,7 +962,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final parsed = FlutterVless.parse(toLink(s, core: true));
     return (
       remark: parsed.remark,
-      config: tuneConfig(parsed.getFullConfiguration(), s, _st),
+      config: s.extra['raw'] == '1'
+          ? parsed.getFullConfiguration()
+          : tuneConfig(parsed.getFullConfiguration(), s, _st),
     );
   }
 
@@ -1177,12 +1192,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   /// Requête HTTP réelle (passe par le tunnel) : durée en ms, ou -1 si échec.
-  Future<int> _httpCheck() async {
-    final to = Duration(seconds: _st.checkTimeout < 3 ? 3 : _st.checkTimeout);
+  Future<int> _httpCheck([String? url, int? secs]) async {
+    final t = secs ?? _st.checkTimeout;
+    final to = Duration(seconds: t < 3 ? 3 : t);
     final client = HttpClient()..connectionTimeout = to;
     final sw = Stopwatch()..start();
     try {
-      final req = await client.getUrl(Uri.parse(_st.checkUrl)).timeout(to);
+      final req = await client.getUrl(Uri.parse(url ?? _st.checkUrl)).timeout(to);
       req.headers.set('Cache-Control', 'no-cache');
       final res = await req.close().timeout(to);
       await res.drain<void>().timeout(to);
@@ -1196,11 +1212,19 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   /// Vérifie que le tunnel donne vraiment accès à Internet.
+  String _diag = ''; // dernier diagnostic réseau (affiché sous la pastille)
+  int _heal = 0; // étapes d'auto-réparation déjà tentées pour cette connexion
+
   Future<void> _checkNet({bool quiet = false}) async {
     if (_state != 'on' || _checking) return;
     _checking = true;
     if (!quiet && mounted) setState(() => _ping = null);
     var d = await _httpCheck();
+    if (d <= 0 && _state == 'on') {
+      // le tunnel vient peut-être juste de s'ouvrir : un second essai avant de conclure
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (_state == 'on') d = await _httpCheck();
+    }
     if (d <= 0 && !_sshMode) {
       try {
         final dynamic r = await _vless.getConnectedServerDelay();
@@ -1209,10 +1233,44 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         d = -1;
       }
     }
+    var healed = false;
+    if (d <= 0 && !_sshMode && _state == 'on') {
+      // diagnostic : le tunnel répond-il par adresse IP (sans DNS) ?
+      final ip = await _httpCheck('https://1.1.1.1/cdn-cgi/trace', 6);
+      final srv = _selected;
+      if (ip > 0) {
+        _diag = 'Tunnel ouvert, mais les noms de domaine ne se résolvent pas (DNS).';
+        _log('Diagnostic : le tunnel répond par IP (${ip}ms) mais pas par nom de domaine : problème DNS');
+        d = ip;
+        if (srv != null && srv.extra['dnsfix'] != '1' && _heal < 1) {
+          _heal = 1;
+          srv.extra['dnsfix'] = '1';
+          _save();
+          _log('Réparation : DNS Cloudflare imposé, reconnexion');
+          healed = true;
+        }
+      } else {
+        _diag = 'Tunnel ouvert, mais aucune donnée ne revient : compte expiré/limité, mauvais SNI/Host ou serveur hors service.';
+        _log('Diagnostic : aucune réponse du tunnel, même par IP');
+        if (srv != null && srv.extra['raw'] != '1' && _heal < 2) {
+          _heal = 2;
+          srv.extra['raw'] = '1';
+          _save();
+          _log('Réparation : configuration brute (sans mes réglages), reconnexion');
+          healed = true;
+        } else if (srv != null && srv.extra['raw'] == '1') {
+          srv.extra.remove('raw');
+          _save();
+          _log('Même la configuration brute échoue : le compte ou le serveur ne répond pas');
+        }
+      }
+    }
     _checking = false;
     if (!mounted || _state != 'on') return;
+    if (d > 0 && _diag.isNotEmpty && !healed) _diag = '';
     setState(() => _ping = d > 0 ? d : -1);
-    _log(d > 0 ? 'HTTP Ping 200 OK (${d}ms)' : 'HTTP Ping échec');
+    _log(d > 0 ? 'HTTP Ping 200 OK (${d}ms)' : 'Test de connexion : échec');
+    if (healed) _reconnect('réparation automatique');
   }
 
   /// Auto Ping : test régulier, avec action après plusieurs échecs de suite.
@@ -1250,7 +1308,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       return;
     }
     _userStop = false;
-    if (!auto) _retries = 0;
+    if (!auto) {
+      _retries = 0;
+      _heal = 0;
+    }
     _log('Connexion...');
     final s = _selected;
     if (s == null) {
@@ -1272,6 +1333,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         return;
       }
     }
+    await _killVpn(); // repart d'un service propre
     if (s.type == 'ssh') {
       await _connectSsh(s);
       return;
@@ -1294,6 +1356,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _timeout = Timer(const Duration(seconds: 25), () {
         if (_state == 'connecting' && mounted) {
           setState(() => _state = 'off');
+          _killVpn();
           _toast('Délai dépassé : vérifie ton compte');
         }
       });
@@ -1307,6 +1370,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } catch (e) {
       _timeout?.cancel();
       if (mounted) setState(() => _state = 'off');
+      _killVpn();
       _toast('Échec : $e');
     }
   }
@@ -1362,6 +1426,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         if (_state == 'connecting' && mounted) {
           _stopSsh();
           setState(() => _state = 'off');
+          _killVpn();
           _toast('Délai dépassé pendant le démarrage du VPN');
         }
       });
@@ -1376,6 +1441,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _timeout?.cancel();
       _stopSsh();
       if (mounted) setState(() => _state = 'off');
+      _killVpn();
       _toast('SSH : $e');
     }
   }
@@ -1888,8 +1954,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } else if (p > 0) {
       net = _chip(Icons.check_circle_outline, 'Internet OK', kGreen);
     } else {
-      net = _chip(Icons.error_outline, "Pas d'accès Internet", kAmber);
-      hint = s != null && s.type == 'ssh'
+      net = _chip(Icons.error_outline, 'Connecté sans Internet', kBad);
+      hint = _diag.isNotEmpty
+          ? _diag
+          : s != null && s.type == 'ssh'
           ? 'Vérifie le payload / SNI / proxy du serveur SSH (touche ici pour retester)'
           : 'Vérifie SNI / Host / TLS dans le serveur (touche ici pour retester)';
     }

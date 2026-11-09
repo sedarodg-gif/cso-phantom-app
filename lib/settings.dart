@@ -68,6 +68,10 @@ class AppSettings {
 
   // SSH
   int sshKeepAlive = 15;
+  int sshPool = 2; // connexions SSH en parallèle (1 à 4)
+
+  // performance Xray : tampon par connexion en Ko (0 = réglage d'origine)
+  int bufferKb = 512;
 
   // journal
   int logLimit = 500;
@@ -95,6 +99,8 @@ class AppSettings {
     checkFails = d.checkFails;
     failAction = d.failAction;
     sshKeepAlive = d.sshKeepAlive;
+    sshPool = d.sshPool;
+    bufferKb = d.bufferKb;
     logLimit = d.logLimit;
   }
 
@@ -120,6 +126,8 @@ class AppSettings {
         'checkFails': checkFails,
         'failAction': failAction,
         'sshKeepAlive': sshKeepAlive,
+        'sshPool': sshPool,
+        'bufferKb': bufferKb,
         'logLimit': logLimit,
       };
 
@@ -148,6 +156,8 @@ class AppSettings {
     s.checkFails = i('checkFails', 3);
     s.failAction = str('failAction', 'reconnect');
     s.sshKeepAlive = i('sshKeepAlive', 15);
+    s.sshPool = i('sshPool', 2).clamp(1, 4).toInt();
+    s.bufferKb = i('bufferKb', 512);
     s.logLimit = i('logLimit', 500);
     return s;
   }
