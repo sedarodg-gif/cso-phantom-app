@@ -858,6 +858,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
     }
     gSpeedUnit = _st.speedUnit;
+    gGlows = themeGlows(_st.theme);
     _applyAnim();
     if (_selId != null && !_servers.any((s) => s.id == _selId)) _selId = null;
     if (mounted) setState(() {});
@@ -904,6 +905,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   void _settingsChanged() {
     gSpeedUnit = _st.speedUnit;
+    gGlows = themeGlows(_st.theme);
     _applyAnim();
     _save();
     if (mounted) setState(() {});
@@ -912,6 +914,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void _resetSettings() {
     _st.resetDefaults();
     _settingsChanged();
+  }
+
+  void _openLog() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => LogPage(
+          host: SettingsHost(
+            st: _st,
+            changed: _settingsChanged,
+            logs: () => _logs,
+            clearLogs: () => _logs.clear(),
+            exportAll: () => _openShare(_servers),
+            resetSettings: _resetSettings,
+          ),
+        ),
+      ),
+    );
   }
 
   void _openSettings() {
@@ -1720,9 +1740,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       backgroundColor: kBg,
       body: Stack(
         children: [
-          _glowBg(const Alignment(-0.9, -1.0), 0.95, const Color(0x6B6366F1)),
-          _glowBg(const Alignment(0.95, -0.55), 0.8, const Color(0x5FA855F7)),
-          _glowBg(const Alignment(0, 0.25), 1.0, const Color(0x2438BDF8)),
+          _glowBg(const Alignment(-0.9, -1.0), 0.95, gGlows[0]),
+          _glowBg(const Alignment(0.95, -0.55), 0.8, gGlows[1]),
+          _glowBg(const Alignment(0, 0.25), 1.0, gGlows[2]),
           SafeArea(
             child: Stack(
               children: [
@@ -1808,9 +1828,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             ),
           ),
           IconButton(
-            tooltip: 'Protection',
-            onPressed: () => setState(() => _tab = 2),
-            icon: const Icon(Icons.verified_user_outlined, color: kMute),
+            tooltip: 'Journal',
+            onPressed: _openLog,
+            icon: const Icon(Icons.receipt_long_outlined, color: kMute),
           ),
           IconButton(
             tooltip: 'Réglages',
@@ -2534,6 +2554,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             _toast('Effacé');
           }),
         ]),
+        const SizedBox(height: 22),
+        Center(child: Image.asset('assets/creator.png', width: 260)),
+        const Center(
+          child: Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text('Créé par Charles Sedar Ouedraogo', style: TextStyle(color: kMute, fontSize: 12)),
+          ),
+        ),
       ],
     );
   }

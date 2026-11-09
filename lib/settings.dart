@@ -19,6 +19,23 @@ const kOrbPalettes = <OrbPalette>[
   OrbPalette('Rouge', Color(0xFFFCA5A5), Color(0xFFB91C1C), Color(0xFF3F0A0A), Color(0xFFF87171)),
 ];
 
+/// Ambiances de l'application (lueurs d'arrière-plan). 0..5 = comme les couleurs de la boule, 6 = noir pur.
+const kThemeNames = <String>['Violet', 'Océan', 'Rose', 'Émeraude', 'Or', 'Rouge', 'Noir (AMOLED)'];
+
+List<Color> themeGlows(int t) {
+  if (t <= 0) {
+    return const [Color(0x6B6366F1), Color(0x5FA855F7), Color(0x2438BDF8)];
+  }
+  if (t < kOrbPalettes.length) {
+    final p = kOrbPalettes[t];
+    return [p.mid.withAlpha(0x6B), p.glow.withAlpha(0x5F), p.light.withAlpha(0x24)];
+  }
+  return const [Color(0x00000000), Color(0x00000000), Color(0x00000000)];
+}
+
+/// Lueurs actuellement affichées (mises à jour quand le thème change).
+List<Color> gGlows = themeGlows(0);
+
 const kOrbStyles = <String>['Boule d\'eau', 'Verre néon', 'Anneau'];
 
 /// Serveurs DNS proposés (DoH : passent dans le tunnel).
@@ -41,6 +58,7 @@ const kDnsNames = <String, String>{
 /// Tous les réglages de l'application (enregistrés sur le téléphone).
 class AppSettings {
   // bouton de connexion
+  int theme = 0; // ambiance de l'application
   int orbColor = 0;
   int orbStyle = 0;
   bool orbAnim = true;
@@ -84,6 +102,7 @@ class AppSettings {
 
   void resetDefaults() {
     final d = AppSettings();
+    theme = d.theme;
     orbColor = d.orbColor;
     orbStyle = d.orbStyle;
     orbAnim = d.orbAnim;
@@ -113,6 +132,7 @@ class AppSettings {
   OrbPalette get palette => kOrbPalettes[orbColor.clamp(0, kOrbPalettes.length - 1).toInt()];
 
   Map<String, dynamic> toJson() => {
+        'theme': theme,
         'orbColor': orbColor,
         'orbStyle': orbStyle,
         'orbAnim': orbAnim,
@@ -144,6 +164,7 @@ class AppSettings {
     int i(String k, int d) => (j[k] is num) ? (j[k] as num).toInt() : d;
     bool b(String k, bool d) => (j[k] is bool) ? j[k] as bool : d;
     String str(String k, String d) => (j[k] is String && (j[k] as String).isNotEmpty) ? j[k] as String : d;
+    s.theme = i('theme', 0).clamp(0, kThemeNames.length - 1).toInt();
     s.orbColor = i('orbColor', 0).clamp(0, kOrbPalettes.length - 1).toInt();
     s.orbStyle = i('orbStyle', 0).clamp(0, kOrbStyles.length - 1).toInt();
     s.orbAnim = b('orbAnim', true);

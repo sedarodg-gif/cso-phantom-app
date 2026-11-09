@@ -50,8 +50,8 @@ class CsoPage extends StatelessWidget {
       backgroundColor: kBg,
       body: Stack(
         children: [
-          _glow(const Alignment(-0.9, -1.0), 0.95, const Color(0x6B6366F1)),
-          _glow(const Alignment(0.95, -0.55), 0.8, const Color(0x5FA855F7)),
+          _glow(const Alignment(-0.9, -1.0), 0.95, gGlows[0]),
+          _glow(const Alignment(0.95, -0.55), 0.8, gGlows[1]),
           SafeArea(
             child: Column(
               children: [
@@ -284,6 +284,13 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           sTitle('Général'),
           sTile(
+            icon: Icons.palette_outlined,
+            title: 'Thème et personnalisation',
+            sub: "Ambiance de l'application : Violet, Océan, Rose, Émeraude, Or, Rouge ou Noir",
+            trailing: _chev(),
+            onTap: () => _push(context, ThemePage(host: h)),
+          ),
+          sTile(
             icon: Icons.bubble_chart_outlined,
             title: 'Bouton de connexion',
             sub: 'Couleur, style, animation et taille de la boule',
@@ -455,6 +462,14 @@ class _SettingsPageState extends State<SettingsPage> {
             title: 'CSO PHANTOM $kAppVersion',
             sub: 'Moteurs : Xray-core (VLESS, VMess, Trojan, Shadowsocks) et SSH',
           ),
+          const SizedBox(height: 18),
+          Center(child: Image.asset('assets/creator.png', width: 260)),
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('Créé par Charles Sedar Ouedraogo', style: TextStyle(color: kMute, fontSize: 12)),
+            ),
+          ),
         ],
       ),
     );
@@ -462,6 +477,99 @@ class _SettingsPageState extends State<SettingsPage> {
 }
 
 // ======================= BOUTON DE CONNEXION =======================
+
+class ThemePage extends StatefulWidget {
+  final SettingsHost host;
+  const ThemePage({super.key, required this.host});
+
+  @override
+  State<ThemePage> createState() => _ThemePageState();
+}
+
+class _ThemePageState extends State<ThemePage> {
+  AppSettings get st => widget.host.st;
+
+  void _set(VoidCallback f) {
+    setState(f);
+    widget.host.changed();
+  }
+
+  Widget _swatch(int i) {
+    final Color a = i < kOrbPalettes.length ? kOrbPalettes[i].light : const Color(0xFF3A3A3A);
+    final Color b = i < kOrbPalettes.length ? kOrbPalettes[i].mid : const Color(0xFF000000);
+    final sel = st.theme == i;
+    return GestureDetector(
+      onTap: () => _set(() {
+        st.theme = i;
+        if (i < kOrbPalettes.length) st.orbColor = i;
+      }),
+      child: Container(
+        width: 96,
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withAlpha(sel ? 30 : 12),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: sel ? kRed : Colors.white.withAlpha(30), width: sel ? 2 : 1),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [a, b],
+                ),
+                border: Border.all(color: Colors.white.withAlpha(70)),
+              ),
+              child: sel ? const Icon(Icons.check, color: Colors.white, size: 22) : null,
+            ),
+            const SizedBox(height: 8),
+            Text(kThemeNames[i],
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final h = widget.host;
+    return CsoPage(
+      title: 'Thème',
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
+        children: [
+          sTitle("Ambiance de l'application"),
+          const Text(
+            "Choisis une ambiance : elle change les lueurs du fond et la couleur de la boule en même temps. "
+            "Tu peux ensuite régler la boule séparément.",
+            style: TextStyle(color: kMute, fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [for (var i = 0; i < kThemeNames.length; i++) _swatch(i)],
+          ),
+          sTitle('Bouton de connexion'),
+          sTile(
+            icon: Icons.bubble_chart_outlined,
+            title: 'Personnaliser la boule',
+            sub: 'Couleur, style (boule d\'eau, verre néon, anneau), animation et taille',
+            trailing: _chev(),
+            onTap: () => _push(context, OrbPage(host: h)),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class OrbPage extends StatefulWidget {
   final SettingsHost host;
