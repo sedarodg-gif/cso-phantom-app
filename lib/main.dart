@@ -23,6 +23,9 @@ const kMute = Color(0xFFB4A8E0);
 const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
+/// Version affichée dans l'application.
+const kAppVersion = 'V6';
+
 const kTypeNames = {
   'vless': 'VLESS',
   'vmess': 'VMess',
@@ -777,6 +780,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   double _ulShown = 0;
   double _totDl = 0; // cumul enregistré
   double _totUl = 0;
+  String _hwid = ''; // identifiant de cet appareil
   final List<double> _dlData = List<double>.filled(30, 0.0, growable: true);
   final List<double> _ulData = List<double>.filled(30, 0.0, growable: true);
 
@@ -830,6 +834,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       } catch (_) {}
     }
     _selId = p.getString('sel');
+    try {
+      _hwid = (await _shareCh.invokeMethod<String>('deviceId')) ?? '';
+    } catch (_) {}
     _conns = p.getInt('conns') ?? 0;
     _totalSecs = p.getInt('secs') ?? 0;
     _totDl = p.getDouble('totdl') ?? 0;
@@ -1163,6 +1170,20 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _ulData.add(ul);
       _ulData.removeAt(0);
     });
+    if (_state == 'on' && !_userStop) {
+      final lim = _st.autoStopMin;
+      final cap = _st.dataLimitMb;
+      if (lim > 0 && _sec >= lim * 60) {
+        _toast('Minuteur atteint : VPN coupé');
+        _toggle();
+        return;
+      }
+      if (cap > 0 && (_dlTotal + _ulTotal) >= cap * 1048576.0) {
+        _toast('Limite de données atteinte : VPN coupé');
+        _toggle();
+        return;
+      }
+    }
     if (_sec % 10 == 0) _save();
     if (_sec == 60) _retries = 0;
     final iv = _st.checkInterval;
@@ -1709,10 +1730,22 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   children: [
                     _topBar(),
                     Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(18, 10, 18, 110),
-                        child: _page(),
-                      ),
+                      child: _tab == 0
+                          // l'accueil se réduit pour tenir sur l'écran, sans défilement
+                          ? Padding(
+                              padding: const EdgeInsets.fromLTRB(18, 6, 18, 96),
+                              child: LayoutBuilder(
+                                builder: (ctx, cons) => FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.topCenter,
+                                  child: SizedBox(width: cons.maxWidth, child: _page()),
+                                ),
+                              ),
+                            )
+                          : SingleChildScrollView(
+                              padding: const EdgeInsets.fromLTRB(18, 10, 18, 110),
+                              child: _page(),
+                            ),
                     ),
                   ],
                 ),
@@ -1877,8 +1910,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       child: GestureDetector(
         onTap: _toggle,
         child: SizedBox(
-          width: _st.orbSize,
-          height: _st.orbSize,
+          width: _st.orbSize > 220 ? 220.0 : _st.orbSize,
+          height: _st.orbSize > 220 ? 220.0 : _st.orbSize,
           child: AnimatedBuilder(
             animation: _spin,
             builder: (_, __) => CustomPaint(
@@ -2001,7 +2034,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final sp = speedParts(bps);
     final v = sp.v;
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
       decoration: glass(r: 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2017,7 +2050,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               TextSpan(
                 text: v,
                 style: const TextStyle(
-                  fontSize: 26,
+                  fontSize: 22,
                   fontWeight: FontWeight.w500,
                   letterSpacing: -.5,
                   fontFeatures: [FontFeature.tabularFigures()],
@@ -2055,7 +2088,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           child: Text(
             _fmt(_sec),
             style: const TextStyle(
-              fontSize: 52,
+              fontSize: 44,
               fontWeight: FontWeight.w500,
               letterSpacing: -1,
               color: Colors.white,
@@ -2063,9 +2096,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         _statusLine(),
-        const SizedBox(height: 16),
+        const SizedBox(height: 10),
         Row(children: [
           Expanded(child: _rateCard(Icons.arrow_downward, 'Téléchargement', _dlShown, kCyan)),
           const SizedBox(width: 10),
@@ -2076,7 +2109,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           onTap: () => setState(() => _tab = 1),
           child: Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: glass(r: 22),
             child: s == null
                 ? const Text("Aucun serveur : appuie pour en ajouter",
@@ -2093,9 +2126,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   ]),
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 10),
         Container(
-          padding: const EdgeInsets.all(18),
+          padding: const EdgeInsets.all(14),
           decoration: glass(),
           child: Column(
             children: [
@@ -2109,7 +2142,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ),
               const SizedBox(height: 8),
               SizedBox(
-                height: 140,
+                height: 90,
                 width: double.infinity,
                 child: CustomPaint(
                   painter: ChartPainter(List<double>.from(_dlData), List<double>.from(_ulData)),
@@ -2353,46 +2386,153 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     );
   }
 
+  Future<void> _pasteImport() async {
+    final d = await Clipboard.getData('text/plain');
+    final t = d?.text ?? '';
+    if (t.trim().isEmpty) {
+      _toast('Presse-papiers vide');
+      return;
+    }
+    _doImport(t);
+  }
+
+  Widget _profAction(IconData ic, String label, VoidCallback on) {
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: on,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: glass(r: 18),
+          child: Column(children: [
+            Icon(ic, color: kRed, size: 24),
+            const SizedBox(height: 6),
+            Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _profileStat(String label, String value, IconData ic) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+        decoration: glass(r: 18),
+        child: Column(children: [
+          Icon(ic, color: kCyan, size: 20),
+          const SizedBox(height: 6),
+          Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          Text(label, style: const TextStyle(fontSize: 11, color: kMute)),
+        ]),
+      ),
+    );
+  }
+
   Widget _profilePage() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Profil', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 14),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-          decoration: glass(),
-          child: Column(children: [
-            _kv('Application', 'CSO PHANTOM V4'),
-            _kv('Moteurs', 'Xray-core + SSH'),
+          padding: const EdgeInsets.all(18),
+          decoration: glass(r: 26),
+          child: Row(children: [
+            Container(
+              width: 64,
+              height: 64,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF8B7BF0), Color(0xFF4C1FB0)],
+                ),
+              ),
+              child: const SizedBox(width: 30, height: 36, child: CustomPaint(painter: GhostPainter())),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('CSO PHANTOM', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 1)),
+                  const SizedBox(height: 4),
+                  Text('Version $kAppVersion', style: const TextStyle(color: kRed, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  const Text('Xray-core + SSH', style: TextStyle(color: kMute, fontSize: 12)),
+                ],
+              ),
+            ),
           ]),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 12),
         Row(children: [
-          Expanded(
-            child: OutlinedButton(
-              onPressed: () => _openShare(_servers),
-              child: const Text('Exporter tout'),
-            ),
-          ),
+          _profileStat('Connexions', '$_conns', Icons.power_settings_new),
           const SizedBox(width: 10),
-          Expanded(
-            child: OutlinedButton(
-              onPressed: () {
-                if (_state != 'off') {
-                  _toast("Déconnecte-toi d'abord");
-                  return;
-                }
-                setState(() {
-                  _servers.clear();
-                  _selId = null;
-                });
-                _save();
-                _toast('Effacé');
-              },
-              child: const Text('Tout effacer'),
-            ),
+          _profileStat('Temps total', _fmt(_totalSecs), Icons.schedule),
+          const SizedBox(width: 10),
+          _profileStat('Serveurs', '${_servers.length}', Icons.dns_outlined),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          _profileStat('Téléchargé', fmtBytes(_totDl), Icons.south),
+          const SizedBox(width: 10),
+          _profileStat('Envoyé', fmtBytes(_totUl), Icons.north),
+        ]),
+        const SizedBox(height: 12),
+        GestureDetector(
+          onTap: _hwid.isEmpty ? null : () => _copy(_hwid),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: glass(r: 18),
+            child: Row(children: [
+              const Icon(Icons.fingerprint, color: kRed),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('ID de cet appareil (Hardware ID)', style: TextStyle(fontSize: 12, color: kMute)),
+                    const SizedBox(height: 2),
+                    Text(_hwid.isEmpty ? 'Indisponible' : _hwid,
+                        overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.copy, size: 18, color: kMute),
+            ]),
           ),
+        ),
+        const SizedBox(height: 12),
+        Row(children: [
+          _profAction(Icons.content_paste, 'Coller un lien', _pasteImport),
+          const SizedBox(width: 10),
+          _profAction(Icons.file_open_outlined, 'Importer fichier', _importFile),
+          const SizedBox(width: 10),
+          _profAction(Icons.ios_share, 'Exporter tout', () => _openShare(_servers)),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          _profAction(Icons.settings_outlined, 'Paramètres', _openSettings),
+          const SizedBox(width: 10),
+          _profAction(Icons.vpn_lock, 'VPN Android', () {
+            _shareCh.invokeMethod<bool>('openVpnSettings').catchError((Object _) => false);
+          }),
+          const SizedBox(width: 10),
+          _profAction(Icons.delete_outline, 'Tout effacer', () {
+            if (_state != 'off') {
+              _toast("Déconnecte-toi d'abord");
+              return;
+            }
+            setState(() {
+              _servers.clear();
+              _selId = null;
+            });
+            _save();
+            _toast('Effacé');
+          }),
         ]),
       ],
     );

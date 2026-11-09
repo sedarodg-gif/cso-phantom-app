@@ -73,6 +73,10 @@ class AppSettings {
   // performance Xray : tampon par connexion en Ko (0 = réglage d'origine)
   int bufferKb = 512;
 
+  // limites de session
+  int autoStopMin = 0; // coupe le VPN après X minutes (0 = jamais)
+  int dataLimitMb = 0; // coupe le VPN après X Mo échangés (0 = illimité)
+
   // journal
   int logLimit = 500;
 
@@ -101,6 +105,8 @@ class AppSettings {
     sshKeepAlive = d.sshKeepAlive;
     sshPool = d.sshPool;
     bufferKb = d.bufferKb;
+    autoStopMin = d.autoStopMin;
+    dataLimitMb = d.dataLimitMb;
     logLimit = d.logLimit;
   }
 
@@ -128,6 +134,8 @@ class AppSettings {
         'sshKeepAlive': sshKeepAlive,
         'sshPool': sshPool,
         'bufferKb': bufferKb,
+        'autoStopMin': autoStopMin,
+        'dataLimitMb': dataLimitMb,
         'logLimit': logLimit,
       };
 
@@ -158,6 +166,8 @@ class AppSettings {
     s.sshKeepAlive = i('sshKeepAlive', 15);
     s.sshPool = i('sshPool', 2).clamp(1, 4).toInt();
     s.bufferKb = i('bufferKb', 512);
+    s.autoStopMin = i('autoStopMin', 0);
+    s.dataLimitMb = i('dataLimitMb', 0);
     s.logLimit = i('logLimit', 500);
     return s;
   }

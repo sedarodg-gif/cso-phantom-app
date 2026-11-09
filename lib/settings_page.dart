@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'main.dart';
 import 'settings.dart';
+import 'speed_page.dart';
 
 const _ch = MethodChannel('cso/share');
 
@@ -359,11 +360,53 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
           sTile(
+            icon: Icons.timer_outlined,
+            title: 'Minuteur de déconnexion',
+            sub: 'Coupe le VPN automatiquement après une durée',
+            trailing: _value(st.autoStopMin == 0 ? 'Jamais' : '${st.autoStopMin} min'),
+            onTap: () async {
+              final v = await _pick<int>(context, 'Minuteur de déconnexion',
+                  {0: 'Jamais', 30: '30 minutes', 60: '1 heure', 120: '2 heures', 240: '4 heures', 480: '8 heures'},
+                  st.autoStopMin);
+              if (v != null) _set(() => st.autoStopMin = v);
+            },
+          ),
+          sTile(
+            icon: Icons.data_usage,
+            title: 'Limite de données',
+            sub: 'Coupe le VPN quand la session a échangé cette quantité de données',
+            trailing: _value(st.dataLimitMb == 0 ? 'Illimitée' : '${st.dataLimitMb} Mo'),
+            onTap: () async {
+              final v = await _pick<int>(context, 'Limite de données',
+                  {0: 'Illimitée', 100: '100 Mo', 500: '500 Mo', 1000: '1 Go', 2000: '2 Go', 5000: '5 Go'},
+                  st.dataLimitMb);
+              if (v != null) _set(() => st.dataLimitMb = v);
+            },
+          ),
+          sTile(
+            icon: Icons.lock_clock_outlined,
+            title: 'VPN toujours actif / blocage',
+            sub: "Ouvre les réglages VPN d'Android : « VPN permanent » et « Bloquer les connexions sans VPN » (kill switch).",
+            trailing: _chev(),
+            onTap: () async {
+              try {
+                await _ch.invokeMethod<bool>('openVpnSettings');
+              } catch (_) {}
+            },
+          ),
+          sTile(
             icon: Icons.hub_outlined,
             title: 'V2Ray / Xray',
             sub: 'Mux, SNI, Host, allowInsecure et transport se règlent dans chaque serveur (Modifier).',
           ),
           sTitle('Outils'),
+          sTile(
+            icon: Icons.speed,
+            title: 'Test de vitesse',
+            sub: 'Mesure le débit réel du tunnel (téléchargement)',
+            trailing: _chev(),
+            onTap: () => _push(context, const SpeedPage()),
+          ),
           sTile(
             icon: Icons.my_location_outlined,
             title: "Chasseur d'IP",
@@ -409,7 +452,7 @@ class _SettingsPageState extends State<SettingsPage> {
           sTitle('À propos'),
           sTile(
             icon: Icons.info_outline,
-            title: 'CSO PHANTOM V4',
+            title: 'CSO PHANTOM $kAppVersion',
             sub: 'Moteurs : Xray-core (VLESS, VMess, Trojan, Shadowsocks) et SSH',
           ),
         ],
