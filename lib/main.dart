@@ -212,7 +212,7 @@ String tuneConfig(String cfg, Server s, AppSettings st) {
 }
 
 /// Tampon par connexion : plus grand = meilleur débit sur les gros transferts.
-void _applyPolicy(Map<String, dynamic> m, int kb) {
+void _applyPolicy(Map m, int kb) {
   if (kb <= 0) return;
   final pol = m['policy'] is Map ? Map<String, dynamic>.from(m['policy'] as Map) : <String, dynamic>{};
   final lv = pol['levels'] is Map ? Map<String, dynamic>.from(pol['levels'] as Map) : <String, dynamic>{};
