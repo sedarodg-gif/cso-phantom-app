@@ -755,6 +755,10 @@ class _BehaviorPageState extends State<BehaviorPage> {
           sSwitch('Reconnexion automatique', 'Relance le VPN si la connexion tombe sans que tu l\'aies coupée',
               st.autoReconnect, (v) => _set(() => st.autoReconnect = v),
               icon: Icons.sync),
+          sSwitch('Changer de serveur automatiquement',
+              "Si la reconnexion échoue, essaie le serveur suivant de ta liste",
+              st.autoSwitch, (v) => _set(() => st.autoSwitch = v),
+              icon: Icons.swap_horiz),
           sTile(
             icon: Icons.repeat,
             title: 'Nombre de tentatives',

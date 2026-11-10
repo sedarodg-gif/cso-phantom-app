@@ -10,6 +10,7 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'server.dart';
+import 'diag_page.dart';
 import 'export_page.dart';
 import 'settings.dart';
 import 'settings_page.dart';
@@ -24,7 +25,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V6';
+const kAppVersion = 'V7';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -797,6 +798,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _userStop = false;
   bool _reconnecting = false;
   int _retries = 0;
+  int _switches = 0; // changements de serveur automatiques déjà faits
+  bool _testingAll = false;
   int _fails = 0;
 
   late final AnimationController _spin =
@@ -1097,6 +1100,20 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void _maybeAutoRetry(String why) {
     if (!_st.autoReconnect || _userStop) return;
     if (_retries >= _st.reconnectTries) {
+      if (_st.autoSwitch && _servers.length > 1 && _switches < _servers.length - 1) {
+        final i = _servers.indexWhere((e) => e.id == _selId);
+        final next = _servers[(i + 1) % _servers.length];
+        _switches++;
+        _retries = 0;
+        _selId = next.id;
+        _save();
+        _log('Changement automatique de serveur : ${next.name}');
+        _toast('Serveur suivant : ${next.name}');
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          if (mounted && _state == 'off' && !_userStop) _toggle(auto: true);
+        });
+        return;
+      }
       _log('Reconnexion abandonnée après $_retries tentative(s)');
       return;
     }
@@ -1131,6 +1148,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _timeout?.cancel();
     _userStop = false;
     _fails = 0;
+    _switches = 0;
     _log('VPN connecté');
     _state = 'on';
     _sec = 0;
@@ -1352,6 +1370,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (!auto) {
       _retries = 0;
       _heal = 0;
+      _switches = 0;
     }
     _log('Connexion...');
     final s = _selected;
@@ -1527,6 +1546,96 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _toast(d > 0
         ? 'Ping : $d ms'
         : 'Test échoué : serveur injoignable ou réglages incorrects');
+  }
+
+  /// Mesure la latence d'un serveur sans message (-1 = échec).
+  Future<int> _measure(Server s) async {
+    if (s.type == 'ssh') {
+      if (_state != 'off') return -1;
+      final sw = Stopwatch()..start();
+      final eng = SshEngine((Map<String, dynamic> _) {});
+      var ms = -1;
+      try {
+        await eng.start(_sshCfg(s));
+        ms = sw.elapsedMilliseconds;
+      } catch (_) {
+        ms = -1;
+      }
+      eng.stop();
+      return ms > 0 ? ms : -1;
+    }
+    try {
+      await _ensureInit();
+      final b = _build(s);
+      final dynamic r = (_state == 'on' && s.id == _selId)
+          ? await _vless.getConnectedServerDelay()
+          : await _vless.getServerDelay(config: b.config);
+      final d = r is num ? r.toInt() : -1;
+      return d > 0 ? d : -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  /// Teste tous les serveurs un par un, les classe du plus rapide au plus lent
+  /// et, si [pick] est vrai, choisit le meilleur.
+  Future<void> _testAll({bool pick = false}) async {
+    if (_testingAll) return;
+    if (_servers.isEmpty) {
+      _toast('Aucun serveur à tester');
+      return;
+    }
+    if (pick && _state != 'off') {
+      _toast('Déconnecte-toi pour choisir le meilleur serveur');
+      return;
+    }
+    setState(() => _testingAll = true);
+    _toast('Test de ${_servers.length} serveur(s)...');
+    for (final s in List<Server>.from(_servers)) {
+      if (!mounted) return;
+      final ms = s.expired ? -1 : await _measure(s);
+      if (!mounted) return;
+      setState(() => _pings[s.id] = ms);
+    }
+    if (!mounted) return;
+    int rank(Server e) {
+      final p = _pings[e.id] ?? -1;
+      return p > 0 ? p : 1 << 30;
+    }
+
+    setState(() {
+      _servers.sort((a, b) => rank(a).compareTo(rank(b)));
+      _testingAll = false;
+    });
+    _save();
+    final best = _servers.first;
+    if (rank(best) >= (1 << 30)) {
+      _toast('Aucun serveur ne répond');
+      return;
+    }
+    if (pick && _state == 'off') {
+      setState(() => _selId = best.id);
+      _save();
+      _toast('Meilleur serveur : ${best.name} (${rank(best)} ms)');
+    } else {
+      _toast('Le plus rapide : ${best.name} (${rank(best)} ms)');
+    }
+  }
+
+  void _openDiag() {
+    final s = _selected;
+    final hidden = s == null || s.locked || s.lockSsh;
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => DiagPage(
+          host: hidden ? '' : s!.host,
+          port: hidden ? 0 : s!.port,
+          vpnOn: _state == 'on',
+          checkUrl: _st.checkUrl,
+        ),
+      ),
+    );
   }
 
   // ---------- serveurs ----------
@@ -2208,6 +2317,22 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           ),
         ]),
         const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: OutlinedButton(
+              onPressed: _testingAll ? null : () => _testAll(),
+              child: Text(_testingAll ? 'Test en cours...' : 'Tout tester'),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: FilledButton(
+              onPressed: _testingAll ? null : () => _testAll(pick: true),
+              child: const Text('Meilleur serveur'),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
         OutlinedButton(
           onPressed: () => _openShare(_servers),
           child: const Text('Tout exporter'),
@@ -2553,6 +2678,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             _save();
             _toast('Effacé');
           }),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          _profAction(Icons.health_and_safety_outlined, 'Diagnostic', _openDiag),
+          const SizedBox(width: 10),
+          _profAction(Icons.bolt, 'Meilleur serveur', () => _testAll(pick: true)),
+          const SizedBox(width: 10),
+          _profAction(Icons.dns_outlined, 'Tout tester', () => _testAll()),
         ]),
         const SizedBox(height: 22),
         Center(child: Image.asset('assets/creator.png', width: 260)),

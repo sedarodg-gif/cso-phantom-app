@@ -72,6 +72,7 @@ class AppSettings {
   bool blockQuic = true;
   bool lan = false;
   bool autoReconnect = true;
+  bool autoSwitch = true; // change de serveur si la reconnexion échoue
   int reconnectTries = 3;
   String dns = 'auto';
   String dnsCustom = '';
@@ -112,6 +113,7 @@ class AppSettings {
     blockQuic = d.blockQuic;
     lan = d.lan;
     autoReconnect = d.autoReconnect;
+    autoSwitch = d.autoSwitch;
     reconnectTries = d.reconnectTries;
     dns = d.dns;
     dnsCustom = d.dnsCustom;
@@ -142,6 +144,7 @@ class AppSettings {
         'blockQuic': blockQuic,
         'lan': lan,
         'autoReconnect': autoReconnect,
+        'autoSwitch': autoSwitch,
         'reconnectTries': reconnectTries,
         'dns': dns,
         'dnsCustom': dnsCustom,
@@ -174,6 +177,7 @@ class AppSettings {
     s.blockQuic = b('blockQuic', true);
     s.lan = b('lan', false);
     s.autoReconnect = b('autoReconnect', true);
+    s.autoSwitch = b('autoSwitch', true);
     s.reconnectTries = i('reconnectTries', 3);
     s.dns = str('dns', 'auto');
     s.dnsCustom = (j['dnsCustom'] ?? '').toString();
