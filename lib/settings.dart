@@ -88,10 +88,10 @@ class AppSettings {
 
   // SSH
   int sshKeepAlive = 15;
-  int sshPool = 2; // connexions SSH en parallèle (1 à 4)
+  int sshPool = 1; // connexions SSH en parallèle (1 à 4)
 
   // performance Xray : tampon par connexion en Ko (0 = réglage d'origine)
-  int bufferKb = 512;
+  int bufferKb = 0;
 
   // limites de session
   int autoStopMin = 0; // coupe le VPN après X minutes (0 = jamais)
@@ -158,6 +158,7 @@ class AppSettings {
         'checkFails': checkFails,
         'failAction': failAction,
         'sshKeepAlive': sshKeepAlive,
+        'poolV': 7,
         'sshPool': sshPool,
         'bufferKb': bufferKb,
         'autoStopMin': autoStopMin,
@@ -193,8 +194,10 @@ class AppSettings {
     s.checkFails = i('checkFails', 3);
     s.failAction = str('failAction', 'reconnect');
     s.sshKeepAlive = i('sshKeepAlive', 15);
-    s.sshPool = i('sshPool', 2).clamp(1, 4).toInt();
-    s.bufferKb = i('bufferKb', 512);
+    // V7 : valeurs sûres par défaut ; on ne garde le choix enregistré que s'il vient de cette version
+    final fresh = j['poolV'] == 7;
+    s.sshPool = fresh ? i('sshPool', 1).clamp(1, 4).toInt() : 1;
+    s.bufferKb = fresh ? i('bufferKb', 0) : 0;
     s.autoStopMin = i('autoStopMin', 0);
     s.dataLimitMb = i('dataLimitMb', 0);
     s.logLimit = i('logLimit', 500);

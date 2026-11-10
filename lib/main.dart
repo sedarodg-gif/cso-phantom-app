@@ -13,6 +13,7 @@ import 'server.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
 import 'payload_editor.dart';
+import 'speed_page.dart';
 import 'settings.dart';
 import 'settings_page.dart';
 import 'ssh_engine.dart';
@@ -1407,6 +1408,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _retries = 0;
       _heal = 0;
       _switches = 0;
+      // les réparations automatiques ne restent pas d'une connexion à l'autre
+      final cur = _selected;
+      if (cur != null) {
+        cur.extra.remove('raw');
+        cur.extra.remove('dnsfix');
+      }
     }
     _log('Connexion...');
     final s = _selected;
@@ -1430,6 +1437,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
     }
     await _killVpn(); // repart d'un service propre
+    await Future<void>.delayed(const Duration(milliseconds: 500)); // laisse Android fermer l'ancien tunnel
     if (s.type == 'ssh') {
       await _connectSsh(s);
       return;
@@ -2685,6 +2693,96 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _doImport(t);
   }
 
+  Widget _profGroup(IconData ic, String label, String sub, VoidCallback on) {
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: on,
+        child: Container(
+          height: 118,
+          padding: const EdgeInsets.all(14),
+          decoration: glass(r: 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(ic, color: kRed, size: 28),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text(sub, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: kMute)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openActions(String title, List<_PAct> items) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF10121A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 20, 22, 8),
+              child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            ),
+            for (final a in items)
+              ListTile(
+                leading: Icon(a.icon, color: kRed),
+                title: Text(a.label),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  a.on();
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmClear() {
+    if (_state != 'off') {
+      _toast("Déconnecte-toi d'abord");
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF10121A),
+        title: const Text('Tout effacer ?'),
+        content: const Text('Tous tes serveurs seront supprimés. Exporte-les avant si tu veux les garder.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                _servers.clear();
+                _selId = null;
+              });
+              _save();
+              _toast('Effacé');
+            },
+            child: const Text('Effacer'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _profAction(IconData ic, String label, VoidCallback on) {
     return Expanded(
       child: InkWell(
@@ -2796,40 +2894,42 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ),
         const SizedBox(height: 12),
         Row(children: [
-          _profAction(Icons.content_paste, 'Coller un lien', _pasteImport),
-          const SizedBox(width: 10),
-          _profAction(Icons.file_open_outlined, 'Importer fichier', _importFile),
-          const SizedBox(width: 10),
-          _profAction(Icons.ios_share, 'Exporter tout', () => _openShare(_servers)),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          _profAction(Icons.settings_outlined, 'Paramètres', _openSettings),
-          const SizedBox(width: 10),
-          _profAction(Icons.vpn_lock, 'VPN Android', () {
-            _shareCh.invokeMethod<bool>('openVpnSettings').catchError((Object _) => false);
+          _profGroup(Icons.folder_copy_outlined, 'Configurations', 'Importer, exporter, effacer', () {
+            _openActions('Configurations', [
+              _PAct(Icons.content_paste, 'Coller un lien', _pasteImport),
+              _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
+              _PAct(Icons.ios_share, 'Exporter tout', () => _openShare(_servers)),
+              _PAct(Icons.delete_outline, 'Tout effacer', _confirmClear),
+            ]);
           }),
           const SizedBox(width: 10),
-          _profAction(Icons.delete_outline, 'Tout effacer', () {
-            if (_state != 'off') {
-              _toast("Déconnecte-toi d'abord");
-              return;
-            }
-            setState(() {
-              _servers.clear();
-              _selId = null;
-            });
-            _save();
-            _toast('Effacé');
+          _profGroup(Icons.dns_outlined, 'Serveurs', 'Tester et choisir', () {
+            _openActions('Serveurs', [
+              _PAct(Icons.bolt, 'Meilleur serveur', () => _testAll(pick: true)),
+              _PAct(Icons.speed, 'Tout tester', () => _testAll()),
+            ]);
           }),
         ]),
         const SizedBox(height: 10),
         Row(children: [
-          _profAction(Icons.health_and_safety_outlined, 'Diagnostic', _openDiag),
+          _profGroup(Icons.build_circle_outlined, 'Outils', 'Diagnostic, vitesse, VPN Android', () {
+            _openActions('Outils', [
+              _PAct(Icons.health_and_safety_outlined, 'Diagnostic du réseau', _openDiag),
+              _PAct(Icons.network_check, 'Test de vitesse', () {
+                Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const SpeedPage()));
+              }),
+              _PAct(Icons.vpn_lock, 'Réglages VPN d\'Android (kill switch)', () {
+                _shareCh.invokeMethod<bool>('openVpnSettings').catchError((Object _) => false);
+              }),
+            ]);
+          }),
           const SizedBox(width: 10),
-          _profAction(Icons.bolt, 'Meilleur serveur', () => _testAll(pick: true)),
-          const SizedBox(width: 10),
-          _profAction(Icons.dns_outlined, 'Tout tester', () => _testAll()),
+          _profGroup(Icons.tune, 'Application', 'Paramètres et journal', () {
+            _openActions('Application', [
+              _PAct(Icons.settings_outlined, 'Paramètres', _openSettings),
+              _PAct(Icons.receipt_long_outlined, 'Journal', _openLog),
+            ]);
+          }),
         ]),
         const SizedBox(height: 22),
         Center(child: Image.asset('assets/creator.png', width: 260)),
@@ -3267,4 +3367,12 @@ class _ServerFormState extends State<ServerForm> {
       ),
     );
   }
+}
+
+/// Une action proposée dans une fenêtre de regroupement du Profil.
+class _PAct {
+  final IconData icon;
+  final String label;
+  final VoidCallback on;
+  _PAct(this.icon, this.label, this.on);
 }
