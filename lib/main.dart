@@ -26,7 +26,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7';
+const kAppVersion = 'V7.2';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -55,6 +55,11 @@ class CsoApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: kBg,
         colorScheme: const ColorScheme.dark(primary: kRed),
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: <TargetPlatform, PageTransitionsBuilder>{
+            TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+          },
+        ),
       ),
       home: const SplashGate(),
     );
@@ -1161,6 +1166,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _userStop = false;
     _fails = 0;
     _switches = 0;
+    if (_st.haptics) HapticFeedback.lightImpact();
     _log('VPN connecté');
     _state = 'on';
     _sec = 0;
@@ -1385,6 +1391,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _toggle({bool auto = false}) async {
+    if (!auto && _st.haptics) HapticFeedback.mediumImpact();
     if (_state == 'connecting') return;
     if (_state == 'on') {
       _userStop = true;
