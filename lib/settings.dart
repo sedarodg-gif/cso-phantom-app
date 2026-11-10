@@ -72,6 +72,7 @@ class AppSettings {
   bool blockQuic = true;
   bool lan = false;
   bool autoReconnect = true;
+  bool compat = false; // mode compatibilité : configuration d'origine, sans mes optimisations
   bool haptics = true; // vibration légère au toucher de la boule
   bool autoSwitch = true; // change de serveur si la reconnexion échoue
   int reconnectTries = 3;
@@ -116,6 +117,7 @@ class AppSettings {
     autoReconnect = d.autoReconnect;
     autoSwitch = d.autoSwitch;
     haptics = d.haptics;
+    compat = d.compat;
     reconnectTries = d.reconnectTries;
     dns = d.dns;
     dnsCustom = d.dnsCustom;
@@ -148,6 +150,7 @@ class AppSettings {
         'autoReconnect': autoReconnect,
         'autoSwitch': autoSwitch,
         'haptics': haptics,
+        'compat': compat,
         'reconnectTries': reconnectTries,
         'dns': dns,
         'dnsCustom': dnsCustom,
@@ -183,6 +186,7 @@ class AppSettings {
     s.autoReconnect = b('autoReconnect', true);
     s.autoSwitch = b('autoSwitch', true);
     s.haptics = b('haptics', true);
+    s.compat = b('compat', false);
     s.reconnectTries = i('reconnectTries', 3);
     s.dns = str('dns', 'auto');
     s.dnsCustom = (j['dnsCustom'] ?? '').toString();

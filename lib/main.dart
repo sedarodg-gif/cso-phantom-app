@@ -27,7 +27,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.4';
+const kAppVersion = 'V7.5';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -769,6 +769,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   // connexion : off | connecting | on
   String _state = 'off';
   int _sec = 0;
+  int _startMs = 0; // heure de début de la session VPN (ms), pour que le chrono survive à la fermeture de l'appli
   int _totalSecs = 0;
   int _conns = 0;
 
@@ -835,9 +836,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   /// Internet, on reprend la session sans la couper ; sinon on nettoie.
   Future<void> _startupSync() async {
     var was = false;
+    var startMs = 0;
     try {
       final p = await SharedPreferences.getInstance();
       was = p.getBool('vpnOn') ?? false;
+      startMs = p.getInt('vpnStart') ?? 0;
     } catch (_) {}
     if (!mounted) return;
     if (was && _selected != null && await _tunPresent()) {
@@ -845,10 +848,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final d = await _httpCheck();
       if (!mounted) return;
       if (d > 0) {
-        final c = _conns;
-        setState(_setOn);
-        _conns = c; // reprise de session, pas une nouvelle connexion
-        _log('VPN toujours actif : session reprise');
+        setState(() => _setOn(resume: startMs > 0 ? startMs : DateTime.now().millisecondsSinceEpoch));
+        _log('VPN toujours actif : session reprise (le chrono continue)');
         return;
       }
     }
@@ -1047,7 +1048,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final parsed = FlutterVless.parse(toLink(s, core: true));
     return (
       remark: parsed.remark,
-      config: s.extra['raw'] == '1'
+      config: (_st.compat || s.extra['raw'] == '1')
           ? parsed.getFullConfiguration()
           : tuneConfig(parsed.getFullConfiguration(), s, _st),
     );
@@ -1199,7 +1200,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  void _setOn() {
+  void _setOn({int resume = 0}) {
     _timeout?.cancel();
     _userStop = false;
     _fails = 0;
@@ -1207,9 +1208,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (_st.haptics) HapticFeedback.lightImpact();
     _log('VPN connecté');
     _state = 'on';
-    SharedPreferences.getInstance().then((p) => p.setBool('vpnOn', true));
-    _sec = 0;
-    _conns++;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    _startMs = resume > 0 ? resume : nowMs;
+    SharedPreferences.getInstance().then((p) {
+      p.setBool('vpnOn', true);
+      if (resume == 0) p.setInt('vpnStart', nowMs);
+    });
+    _sec = resume > 0 ? ((nowMs - resume) ~/ 1000) : 0;
+    if (resume == 0) _conns++;
     _prevDl = null;
     _prevUl = null;
     _ping = null;
@@ -1217,7 +1223,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
     Future<void>.delayed(const Duration(seconds: 2), _checkNet);
-    final cm = _selected?.connMsg ?? '';
+    final cm = resume > 0 ? '' : (_selected?.connMsg ?? '');
     if (cm.isNotEmpty) {
       Future<void>.delayed(const Duration(milliseconds: 300), () {
         if (mounted && _state == 'on') _showInfo('Message', cm);
@@ -1273,7 +1279,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _prevDl = _dlTotal;
     _prevUl = _ulTotal;
     setState(() {
-      _sec++;
+      // chrono basé sur l'heure réelle : il continue même si l'appli a été fermée
+      _sec = _startMs > 0 ? ((DateTime.now().millisecondsSinceEpoch - _startMs) ~/ 1000) : _sec + 1;
       _totalSecs++;
       _dlShown = dl;
       _ulShown = ul;
@@ -1297,7 +1304,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       }
     }
     if (_sec % 10 == 0) _save();
-    if (_sec == 60) _retries = 0;
+    if (_sec >= 60 && _retries > 0) _retries = 0;
     final iv = _st.checkInterval;
     if (iv > 0 && _sec > 0 && _sec % iv == 0) _autoCheck();
   }
@@ -1308,6 +1315,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _stopSsh();
     _state = 'off';
     SharedPreferences.getInstance().then((p) => p.setBool('vpnOn', false));
+    _startMs = 0;
     _sec = 0;
     _dlBps = 0;
     _ulBps = 0;
