@@ -50,6 +50,7 @@ class Server {
   String connMsg; // message affiché à la connexion
   String hwids; // identifiants d'appareils autorisés (vide = tous)
   bool lockSsh; // masque l'utilisateur et le mot de passe SSH
+  String group; // dossier (ex. Orange, Moov) ; vide = sans dossier
   Map<String, String> extra; // autres paramètres du lien (aid, type, flow, fp...)
 
   Server({
@@ -77,6 +78,7 @@ class Server {
     this.connMsg = '',
     this.hwids = '',
     this.lockSsh = false,
+    this.group = '',
     Map<String, String>? extra,
   }) : extra = extra ?? <String, String>{};
 
@@ -115,6 +117,7 @@ class Server {
         'connMsg': connMsg,
         'hwids': hwids,
         'lockSsh': lockSsh,
+        'group': group,
         'extra': extra,
       };
 
@@ -143,6 +146,7 @@ class Server {
         connMsg: (j['connMsg'] ?? '').toString(),
         hwids: (j['hwids'] ?? '').toString(),
         lockSsh: j['lockSsh'] == true,
+        group: (j['group'] ?? '').toString(),
         extra: j['extra'] is Map
             ? (j['extra'] as Map).map((k, v) => MapEntry(k.toString(), v.toString()))
             : null,

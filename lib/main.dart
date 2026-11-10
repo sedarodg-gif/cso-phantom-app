@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'server.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
+import 'payload_editor.dart';
 import 'settings.dart';
 import 'settings_page.dart';
 import 'ssh_engine.dart';
@@ -781,6 +782,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   double _ulShown = 0;
   double _totDl = 0; // cumul enregistré
   double _totUl = 0;
+  Map<String, double> _daily = <String, double>{}; // octets échangés par jour (aaaa-mm-jj)
   String _hwid = ''; // identifiant de cet appareil
   final List<double> _dlData = List<double>.filled(30, 0.0, growable: true);
   final List<double> _ulData = List<double>.filled(30, 0.0, growable: true);
@@ -844,6 +846,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _totalSecs = p.getInt('secs') ?? 0;
     _totDl = p.getDouble('totdl') ?? 0;
     _totUl = p.getDouble('totul') ?? 0;
+    try {
+      final dj = p.getString('daily');
+      if (dj != null) {
+        final m = jsonDecode(dj) as Map;
+        _daily = m.map((k, v) => MapEntry(k.toString(), (v as num).toDouble()));
+      }
+    } catch (_) {
+      _daily = <String, double>{};
+    }
     final sj = p.getString('settings');
     if (sj != null) {
       try {
@@ -880,6 +891,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     p.setInt('secs', _totalSecs);
     p.setDouble('totdl', _totDl);
     p.setDouble('totul', _totUl);
+    p.setString('daily', jsonEncode(_daily));
     p.setString('settings', jsonEncode(_st.toJson()));
   }
 
@@ -1180,6 +1192,21 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     );
   }
 
+  String _dayKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  void _addDaily(double bytes) {
+    if (bytes <= 0) return;
+    final k = _dayKey(DateTime.now());
+    _daily[k] = (_daily[k] ?? 0) + bytes;
+    if (_daily.length > 40) {
+      final keys = _daily.keys.toList()..sort();
+      for (final old in keys.take(_daily.length - 31)) {
+        _daily.remove(old);
+      }
+    }
+  }
+
   void _tick() {
     if (!mounted) return;
     var dl = _dlBps;
@@ -1190,11 +1217,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final d = _dlTotal - pd;
       if (d > dl) dl = d;
       _totDl += d;
+      _addDaily(d);
     }
     if (pu != null && _ulTotal >= pu) {
       final u = _ulTotal - pu;
       if (u > ul) ul = u;
       _totUl += u;
+      _addDaily(u);
     }
     _prevDl = _dlTotal;
     _prevUl = _ulTotal;
@@ -1649,6 +1678,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       ),
       builder: (_) => ServerForm(
         server: s,
+        groups: _groupNames(),
         onSave: (n) {
           setState(() {
             final i = _servers.indexWhere((x) => x.id == n.id);
@@ -2295,6 +2325,40 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     ]);
   }
 
+  List<String> _groupNames() {
+    final g = <String>{for (final s in _servers) if (s.group.isNotEmpty) s.group}.toList();
+    g.sort();
+    return g;
+  }
+
+  List<Widget> _groupedCards() {
+    final names = _groupNames();
+    if (names.isEmpty) return [for (final s in _servers) _serverCard(s)];
+    final out = <Widget>[];
+    void section(String title, List<Server> list) {
+      if (list.isEmpty) return;
+      out.add(Padding(
+        padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+        child: Row(children: [
+          const Icon(Icons.folder_outlined, size: 18, color: kRed),
+          const SizedBox(width: 8),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(width: 8),
+          Text('${list.length}', style: const TextStyle(color: kMute, fontSize: 12)),
+        ]),
+      ));
+      for (final s in list) {
+        out.add(_serverCard(s));
+      }
+    }
+
+    for (final g in names) {
+      section(g, _servers.where((s) => s.group == g).toList());
+    }
+    section('Sans dossier', _servers.where((s) => s.group.isEmpty).toList());
+    return out;
+  }
+
   Widget _serversPage() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2347,7 +2411,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               style: TextStyle(color: kMute, height: 1.5),
             ),
           ),
-        for (final s in _servers) _serverCard(s),
+        ..._groupedCards(),
       ],
     );
   }
@@ -2527,7 +2591,80 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             _kv('Total envoyé', fmtBytes(_totUl)),
           ]),
         ),
+        const SizedBox(height: 14),
+        _usageChart(),
       ],
+    );
+  }
+
+  /// Données échangées sur les 7 derniers jours.
+  Widget _usageChart() {
+    const wd = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+    final now = DateTime.now();
+    final vals = <double>[];
+    final labels = <String>[];
+    for (var i = 6; i >= 0; i--) {
+      final d = now.subtract(Duration(days: i));
+      vals.add(_daily[_dayKey(d)] ?? 0);
+      labels.add(wd[d.weekday - 1]);
+    }
+    var mx = 0.0;
+    var total = 0.0;
+    for (final v in vals) {
+      if (v > mx) mx = v;
+      total += v;
+    }
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: glass(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Utilisation (7 jours)', style: TextStyle(fontWeight: FontWeight.w700)),
+              Text(fmtBytes(total), style: const TextStyle(color: kCyan, fontWeight: FontWeight.w600)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: 130,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (var i = 0; i < 7; i++)
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(vals[i] > 0 ? fmtBytes(vals[i]) : '',
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                            style: const TextStyle(fontSize: 9, color: kMute)),
+                        const SizedBox(height: 4),
+                        Container(
+                          height: mx > 0 ? 6 + 70 * (vals[i] / mx) : 6,
+                          margin: const EdgeInsets.symmetric(horizontal: 5),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            gradient: const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Color(0xFFA78BFA), Color(0xFF4C1FB0)],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(labels[i], style: TextStyle(fontSize: 11, color: i == 6 ? kRed : kMute)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -2705,7 +2842,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 class ServerForm extends StatefulWidget {
   final Server? server;
   final void Function(Server) onSave;
-  const ServerForm({super.key, required this.server, required this.onSave});
+  final List<String> groups;
+  const ServerForm({super.key, required this.server, required this.onSave, this.groups = const <String>[]});
 
   @override
   State<ServerForm> createState() => _ServerFormState();
@@ -2753,6 +2891,7 @@ class _ServerFormState extends State<ServerForm> {
   final hosth = TextEditingController();
   final sni = TextEditingController();
   final payload = TextEditingController();
+  final group = TextEditingController();
   final proxy = TextEditingController();
   String err = '';
 
@@ -2777,6 +2916,7 @@ class _ServerFormState extends State<ServerForm> {
     hosth.text = s?.hosth ?? '';
     sni.text = s?.sni ?? '';
     payload.text = s?.payload ?? '';
+    group.text = s?.group ?? '';
     proxy.text = s?.proxy ?? '';
     mode = _detectMode();
   }
@@ -2829,7 +2969,7 @@ class _ServerFormState extends State<ServerForm> {
 
   @override
   void dispose() {
-    for (final c in [name, host, port, uuid, user, pass, path, hosth, sni, payload, proxy]) {
+    for (final c in [name, host, port, uuid, user, pass, path, hosth, sni, payload, proxy, group]) {
       c.dispose();
     }
     super.dispose();
@@ -2855,6 +2995,19 @@ class _ServerFormState extends State<ServerForm> {
           borderSide: BorderSide(color: Colors.white.withAlpha(56)),
         ),
       );
+
+  Future<void> _editPayload() async {
+    final h = host.text.trim();
+    final hh = hosth.text.trim().isEmpty ? h : hosth.text.trim().split(',').first.trim();
+    final r = await showPayloadEditor(
+      context,
+      initial: payload.text,
+      host: h,
+      hostHeader: hh,
+      port: int.tryParse(port.text.trim()) ?? 22,
+    );
+    if (r != null && mounted) setState(() => payload.text = r);
+  }
 
   Widget _field(String label, TextEditingController c,
       {String hint = '', bool num = false, int lines = 1}) {
@@ -2953,6 +3106,7 @@ class _ServerFormState extends State<ServerForm> {
       connMsg: old?.connMsg ?? '',
       hwids: old?.hwids ?? '',
       lockSsh: old?.lockSsh ?? false,
+      group: group.text.trim(),
       expires: old?.expires ?? 0,
       extra: (old != null && old.type == type)
           ? Map<String, String>.from(old.extra)
@@ -2973,6 +3127,22 @@ class _ServerFormState extends State<ServerForm> {
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             const SizedBox(height: 14),
             _field('Nom', name, hint: 'Mon serveur'),
+            _field('Dossier (optionnel)', group, hint: 'ex. Orange, Moov, Perso'),
+            if (widget.groups.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    for (final g in widget.groups)
+                      ActionChip(
+                        label: Text(g, style: const TextStyle(fontSize: 12)),
+                        onPressed: () => setState(() => group.text = g),
+                      ),
+                  ],
+                ),
+              ),
             _drop('Protocole', type, const {
               'vless': 'VLESS',
               'vmess': 'VMess',
@@ -3042,6 +3212,15 @@ class _ServerFormState extends State<ServerForm> {
             if (v('payload'))
               _field('Payload', payload,
                   hint: 'GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]', lines: 3),
+            if (v('payload'))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: OutlinedButton.icon(
+                  onPressed: _editPayload,
+                  icon: const Icon(Icons.edit_note),
+                  label: const Text('Éditeur de payload (modèles et aperçu)'),
+                ),
+              ),
             if (v('payload'))
               const Padding(
                 padding: EdgeInsets.only(bottom: 12),
