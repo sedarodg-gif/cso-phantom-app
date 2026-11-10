@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:io' show HttpClient;
+import 'dart:io' show HttpClient, NetworkInterface;
 import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
@@ -27,7 +27,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.2';
+const kAppVersion = 'V7.4';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -817,9 +817,46 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    _load();
-    // un VPN resté actif d'une session précédente (appli fermée) ne doit pas rester orphelin
-    _killVpn();
+    // à l'ouverture : on reprend un VPN encore actif au lieu de le couper
+    _load().then((_) => _startupSync());
+  }
+
+  /// Vrai si une interface VPN (tun) est présente sur le téléphone.
+  Future<bool> _tunPresent() async {
+    try {
+      final l = await NetworkInterface.list();
+      return l.any((i) => i.name.toLowerCase().startsWith('tun'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Appli rouverte après avoir été fermée : si le VPN tourne encore et laisse passer
+  /// Internet, on reprend la session sans la couper ; sinon on nettoie.
+  Future<void> _startupSync() async {
+    var was = false;
+    try {
+      final p = await SharedPreferences.getInstance();
+      was = p.getBool('vpnOn') ?? false;
+    } catch (_) {}
+    if (!mounted) return;
+    if (was && _selected != null && await _tunPresent()) {
+      await _ensureInit();
+      final d = await _httpCheck();
+      if (!mounted) return;
+      if (d > 0) {
+        final c = _conns;
+        setState(_setOn);
+        _conns = c; // reprise de session, pas une nouvelle connexion
+        _log('VPN toujours actif : session reprise');
+        return;
+      }
+    }
+    await _killVpn();
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool('vpnOn', false);
+    } catch (_) {}
   }
 
   @override
@@ -1170,6 +1207,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (_st.haptics) HapticFeedback.lightImpact();
     _log('VPN connecté');
     _state = 'on';
+    SharedPreferences.getInstance().then((p) => p.setBool('vpnOn', true));
     _sec = 0;
     _conns++;
     _prevDl = null;
@@ -1269,6 +1307,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _ticker?.cancel();
     _stopSsh();
     _state = 'off';
+    SharedPreferences.getInstance().then((p) => p.setBool('vpnOn', false));
     _sec = 0;
     _dlBps = 0;
     _ulBps = 0;
