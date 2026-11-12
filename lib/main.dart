@@ -27,7 +27,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.6';
+const kAppVersion = 'V7.7';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -798,6 +798,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   int? _ping;
   bool _checking = false;
   final Map<String, int> _pings = {};
+  String _q = ''; // recherche de serveur
+  int _sortMode = 0; // 0 ordre normal, 1 nom, 2 ping
 
   Timer? _ticker;
   Timer? _timeout;
@@ -1952,16 +1954,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     _topBar(),
                     Expanded(
                       child: _tab == 0
-                          // l'accueil se réduit pour tenir sur l'écran, sans défilement
+                          // l'accueil tient sur l'écran sans défilement : l'orbe prend la place restante
                           ? Padding(
                               padding: const EdgeInsets.fromLTRB(18, 6, 18, 96),
-                              child: LayoutBuilder(
-                                builder: (ctx, cons) => FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.topCenter,
-                                  child: SizedBox(width: cons.maxWidth, child: _page()),
-                                ),
-                              ),
+                              child: _page(),
                             )
                           : SingleChildScrollView(
                               padding: const EdgeInsets.fromLTRB(18, 10, 18, 110),
@@ -2123,7 +2119,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  Widget _orb() {
+  Widget _orb(double size) {
     final on = _state == 'on';
     return Semantics(
       button: true,
@@ -2131,8 +2127,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       child: GestureDetector(
         onTap: _toggle,
         child: SizedBox(
-          width: _st.orbSize > 220 ? 220.0 : _st.orbSize,
-          height: _st.orbSize > 220 ? 220.0 : _st.orbSize,
+          width: size,
+          height: size,
           child: AnimatedBuilder(
             animation: _spin,
             builder: (_, __) => CustomPaint(
@@ -2294,8 +2290,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       children: [
         const SizedBox(height: 4),
         _statusPill(),
-        const SizedBox(height: 4),
-        _orb(),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (ctx, b) {
+              final side = [b.maxHeight - 8, b.maxWidth, _st.orbSize].reduce((x, y) => x < y ? x : y);
+              return Center(child: _orb(side < 60 ? 60.0 : side));
+            },
+          ),
+        ),
         Text(label,
             style: const TextStyle(
                 fontSize: 11, letterSpacing: 3, color: kMute, fontWeight: FontWeight.w500)),
@@ -2363,7 +2365,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ),
               const SizedBox(height: 8),
               SizedBox(
-                height: 90,
+                height: 64,
                 width: double.infinity,
                 child: CustomPaint(
                   painter: ChartPainter(List<double>.from(_dlData), List<double>.from(_ulData)),
@@ -2387,6 +2389,40 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     ]);
   }
 
+  List<Server> _view() {
+    final q = _q.trim().toLowerCase();
+    final l = _servers.where((x) {
+      if (q.isEmpty) return true;
+      return x.name.toLowerCase().contains(q) ||
+          x.host.toLowerCase().contains(q) ||
+          x.type.toLowerCase().contains(q) ||
+          x.group.toLowerCase().contains(q);
+    }).toList();
+    if (_sortMode == 1) {
+      l.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    } else if (_sortMode == 2) {
+      int rank(Server e) {
+        final p = _pings[e.id] ?? -1;
+        return p > 0 ? p : 1 << 30;
+      }
+
+      l.sort((a, b) => rank(a).compareTo(rank(b)));
+    }
+    return l;
+  }
+
+  void _duplicate(Server s) {
+    final c = Server.fromJson(Map<String, dynamic>.from(s.toJson()));
+    c.id = newId();
+    c.name = '${s.name} (copie)';
+    setState(() {
+      final i = _servers.indexWhere((x) => x.id == s.id);
+      _servers.insert(i < 0 ? _servers.length : i + 1, c);
+    });
+    _save();
+    _toast('Serveur dupliqué');
+  }
+
   List<String> _groupNames() {
     final g = <String>{for (final s in _servers) if (s.group.isNotEmpty) s.group}.toList();
     g.sort();
@@ -2394,8 +2430,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   List<Widget> _groupedCards() {
+    final view = _view();
     final names = _groupNames();
-    if (names.isEmpty) return [for (final s in _servers) _serverCard(s)];
+    if (names.isEmpty) return [for (final s in view) _serverCard(s)];
     final out = <Widget>[];
     void section(String title, List<Server> list) {
       if (list.isEmpty) return;
@@ -2415,9 +2452,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
 
     for (final g in names) {
-      section(g, _servers.where((s) => s.group == g).toList());
+      section(g, view.where((s) => s.group == g).toList());
     }
-    section('Sans dossier', _servers.where((s) => s.group.isEmpty).toList());
+    section('Sans dossier', view.where((s) => s.group.isEmpty).toList());
     return out;
   }
 
@@ -2442,6 +2479,33 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           icon: const Icon(Icons.swap_vert),
           label: const Text('Importer / Exporter'),
         ),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              onChanged: (v) => setState(() => _q = v),
+              decoration: InputDecoration(
+                hintText: 'Chercher un serveur...',
+                prefixIcon: const Icon(Icons.search, size: 20),
+                isDense: true,
+                filled: true,
+                fillColor: Colors.white.withAlpha(14),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          PopupMenuButton<int>(
+            tooltip: 'Trier',
+            icon: Icon(Icons.sort, color: _sortMode == 0 ? kMute : kRed),
+            onSelected: (v) => setState(() => _sortMode = v),
+            itemBuilder: (_) => const [
+              PopupMenuItem<int>(value: 0, child: Text('Ordre normal')),
+              PopupMenuItem<int>(value: 1, child: Text('Par nom')),
+              PopupMenuItem<int>(value: 2, child: Text('Par ping (plus rapide)')),
+            ],
+          ),
+        ]),
         const SizedBox(height: 8),
         Row(children: [
           Expanded(
@@ -2570,6 +2634,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           Row(children: [
             _act(Icons.speed, 'Tester', () => _testServer(s)),
             if (!s.locked) _act(Icons.edit_outlined, 'Modifier', () => _openForm(s)),
+            if (!s.locked && !s.lockSsh) _act(Icons.copy_all_outlined, 'Dupliquer', () => _duplicate(s)),
             if (!s.locked && !s.lockSsh) _act(Icons.ios_share, 'Partager', () => _openShare([s])),
             _act(Icons.delete_outline, 'Supprimer', () => _delete(s)),
           ]),
@@ -2911,29 +2976,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           _profileStat('Envoyé', fmtBytes(_totUl), Icons.north),
         ]),
         const SizedBox(height: 12),
-        GestureDetector(
-          onTap: _hwid.isEmpty ? null : () => _copy(_hwid),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: glass(r: 18),
-            child: Row(children: [
-              const Icon(Icons.fingerprint, color: kRed),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('ID de cet appareil (Hardware ID)', style: TextStyle(fontSize: 12, color: kMute)),
-                    const SizedBox(height: 2),
-                    Text(_hwid.isEmpty ? 'Indisponible' : _hwid,
-                        overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
-                  ],
-                ),
-              ),
-              const Icon(Icons.copy, size: 18, color: kMute),
-            ]),
-          ),
-        ),
         const SizedBox(height: 12),
         Row(children: [
           _profGroup(Icons.dns_outlined, 'Serveurs et outils', 'Tester, diagnostic, vitesse, VPN Android', () {
