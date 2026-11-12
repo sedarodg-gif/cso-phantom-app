@@ -13,6 +13,17 @@ if 'android.permission.INTERNET' not in s:
 if 'QUERY_ALL_PACKAGES' not in s:
     s = s.replace('<application',
                   '<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>\n    <application', 1)
+# --- AdMob : identifiant de l'application, lu dans lib/ads_config.dart ---
+try:
+    cfg = open('lib/ads_config.dart', encoding='utf-8').read()
+    mm = re.search(r"kAdmobAppId\s*=\s*'([^']+)'", cfg)
+    app_id = mm.group(1) if mm else 'ca-app-pub-3940256099942544~3347511713'
+except OSError:
+    app_id = 'ca-app-pub-3940256099942544~3347511713'
+if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
+    s = re.sub(r'(<application[^>]*>)',
+               lambda x: x.group(1) + '\n        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="' + app_id + '"/>',
+               s, count=1)
 open(m, 'w', encoding='utf-8').write(s)
 print('Manifest OK')
 

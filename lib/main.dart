@@ -10,6 +10,7 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'server.dart';
+import 'ads.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
 import 'payload_editor.dart';
@@ -27,7 +28,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.5';
+const kAppVersion = 'V7.6';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -40,6 +41,7 @@ const kTypeNames = {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
+  Ads.init(); // annonces : démarrage en arrière-plan, sans bloquer l'appli
   runApp(const CsoApp());
 }
 
@@ -1448,6 +1450,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       } catch (_) {}
       setState(_setOff);
       _toast('Déconnecté');
+      Ads.maybeShowInterstitial();
       return;
     }
     _userStop = false;
@@ -2111,13 +2114,25 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Widget _page() {
     switch (_tab) {
       case 1:
-        return _serversPage();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [_serversPage(), const AdBanner()],
+        );
       case 2:
-        return _shieldPage();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [_shieldPage(), const AdBanner()],
+        );
       case 3:
-        return _statsPage();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [_statsPage(), const AdBanner()],
+        );
       case 4:
-        return _profilePage();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [_profilePage(), const AdBanner()],
+        );
       default:
         return _homePage();
     }
