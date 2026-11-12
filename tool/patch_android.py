@@ -37,6 +37,40 @@ for f in glob.glob('android/app/build.gradle*'):
     open(f, 'w', encoding='utf-8').write(t)
     print('Gradle OK :', f)
 
+# --- Lint : désactive l'analyse « lintVital » des plugins (bug de lint avec webview_flutter_android) ---
+for f in glob.glob('android/build.gradle.kts'):
+    t = open(f, encoding='utf-8').read()
+    if 'cso-nolint' not in t:
+        t += """
+
+// cso-nolint
+subprojects {
+    tasks.configureEach {
+        if (name.startsWith("lintVital") || name.startsWith("lintAnalyze") || name.startsWith("lintReport")) {
+            enabled = false
+        }
+    }
+}
+"""
+        open(f, 'w', encoding='utf-8').write(t)
+    print('Lint OK :', f)
+for f in glob.glob('android/build.gradle'):
+    t = open(f, encoding='utf-8').read()
+    if 'cso-nolint' not in t:
+        t += """
+
+// cso-nolint
+subprojects {
+    tasks.configureEach { task ->
+        if (task.name.startsWith('lintVital') || task.name.startsWith('lintAnalyze') || task.name.startsWith('lintReport')) {
+            task.enabled = false
+        }
+    }
+}
+"""
+        open(f, 'w', encoding='utf-8').write(t)
+    print('Lint OK :', f)
+
 # --- MainActivity : canal de partage natif "cso/share" ---
 pkg = 'com.csophantom.cso_phantom'
 try:
