@@ -13,63 +13,18 @@ if 'android.permission.INTERNET' not in s:
 if 'QUERY_ALL_PACKAGES' not in s:
     s = s.replace('<application',
                   '<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>\n    <application', 1)
-# --- AdMob : identifiant de l'application, lu dans lib/ads_config.dart ---
-try:
-    cfg = open('lib/ads_config.dart', encoding='utf-8').read()
-    mm = re.search(r"kAdmobAppId\s*=\s*'([^']+)'", cfg)
-    app_id = mm.group(1) if mm else 'ca-app-pub-3940256099942544~3347511713'
-except OSError:
-    app_id = 'ca-app-pub-3940256099942544~3347511713'
-if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
-    s = re.sub(r'(<application[^>]*>)',
-               lambda x: x.group(1) + '\n        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="' + app_id + '"/>',
-               s, count=1)
 open(m, 'w', encoding='utf-8').write(s)
 print('Manifest OK')
 
-# --- Gradle : minSdk 24 + extraction des libs natives ---
+# --- Gradle : minSdk 23 + extraction des libs natives ---
 for f in glob.glob('android/app/build.gradle*'):
     t = open(f, encoding='utf-8').read()
-    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>24', t)
+    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>23', t)
     if 'useLegacyPackaging' not in t:
         t = re.sub(r'android\s*\{',
                    'android {\n    packaging { jniLibs { useLegacyPackaging = true } }', t, count=1)
     open(f, 'w', encoding='utf-8').write(t)
     print('Gradle OK :', f)
-
-# --- Lint : désactive l'analyse « lintVital » des plugins (bug de lint avec webview_flutter_android) ---
-for f in glob.glob('android/build.gradle.kts'):
-    t = open(f, encoding='utf-8').read()
-    if 'cso-nolint' not in t:
-        t += """
-
-// cso-nolint
-subprojects {
-    tasks.configureEach {
-        if (name.startsWith("lintVital") || name.startsWith("lintAnalyze") || name.startsWith("lintReport")) {
-            enabled = false
-        }
-    }
-}
-"""
-        open(f, 'w', encoding='utf-8').write(t)
-    print('Lint OK :', f)
-for f in glob.glob('android/build.gradle'):
-    t = open(f, encoding='utf-8').read()
-    if 'cso-nolint' not in t:
-        t += """
-
-// cso-nolint
-subprojects {
-    tasks.configureEach { task ->
-        if (task.name.startsWith('lintVital') || task.name.startsWith('lintAnalyze') || task.name.startsWith('lintReport')) {
-            task.enabled = false
-        }
-    }
-}
-"""
-        open(f, 'w', encoding='utf-8').write(t)
-    print('Lint OK :', f)
 
 # --- MainActivity : canal de partage natif "cso/share" ---
 pkg = 'com.csophantom.cso_phantom'

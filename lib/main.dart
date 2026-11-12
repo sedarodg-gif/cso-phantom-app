@@ -10,7 +10,6 @@ import 'package:flutter_vless/flutter_vless.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'server.dart';
-import 'ads.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
 import 'payload_editor.dart';
@@ -41,7 +40,6 @@ const kTypeNames = {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
-  Ads.init(); // annonces : démarrage en arrière-plan, sans bloquer l'appli
   runApp(const CsoApp());
 }
 
@@ -1450,7 +1448,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       } catch (_) {}
       setState(_setOff);
       _toast('Déconnecté');
-      Ads.maybeShowInterstitial();
       return;
     }
     _userStop = false;
@@ -2114,25 +2111,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Widget _page() {
     switch (_tab) {
       case 1:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [_serversPage(), const AdBanner()],
-        );
+        return _serversPage();
       case 2:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [_shieldPage(), const AdBanner()],
-        );
+        return _shieldPage();
       case 3:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [_statsPage(), const AdBanner()],
-        );
+        return _statsPage();
       case 4:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [_profilePage(), const AdBanner()],
-        );
+        return _profilePage();
       default:
         return _homePage();
     }
@@ -2448,15 +2433,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           ],
         ),
         const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-            child: OutlinedButton(onPressed: _openImport, child: const Text('Importer lien')),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: OutlinedButton(onPressed: _importFile, child: const Text('Importer fichier')),
-          ),
-        ]),
+        OutlinedButton.icon(
+          onPressed: () => _openActions('Importer / Exporter', [
+            _PAct(Icons.link, 'Importer un lien', _openImport),
+            _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
+            _PAct(Icons.ios_share, 'Exporter (lien ou fichier)', () => _openShare(_servers)),
+          ]),
+          icon: const Icon(Icons.swap_vert),
+          label: const Text('Importer / Exporter'),
+        ),
         const SizedBox(height: 8),
         Row(children: [
           Expanded(
@@ -2473,11 +2458,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             ),
           ),
         ]),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          onPressed: () => _openShare(_servers),
-          child: const Text('Tout exporter'),
-        ),
         const SizedBox(height: 14),
         if (_servers.isEmpty)
           const Padding(
@@ -2956,26 +2936,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ),
         const SizedBox(height: 12),
         Row(children: [
-          _profGroup(Icons.folder_copy_outlined, 'Configurations', 'Importer, exporter, effacer', () {
-            _openActions('Configurations', [
-              _PAct(Icons.content_paste, 'Coller un lien', _pasteImport),
-              _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
-              _PAct(Icons.ios_share, 'Exporter tout', () => _openShare(_servers)),
-              _PAct(Icons.delete_outline, 'Tout effacer', _confirmClear),
-            ]);
-          }),
-          const SizedBox(width: 10),
-          _profGroup(Icons.dns_outlined, 'Serveurs', 'Tester et choisir', () {
-            _openActions('Serveurs', [
+          _profGroup(Icons.dns_outlined, 'Serveurs et outils', 'Tester, diagnostic, vitesse, VPN Android', () {
+            _openActions('Serveurs et outils', [
               _PAct(Icons.bolt, 'Meilleur serveur', () => _testAll(pick: true)),
               _PAct(Icons.speed, 'Tout tester', () => _testAll()),
-            ]);
-          }),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          _profGroup(Icons.build_circle_outlined, 'Outils', 'Diagnostic, vitesse, VPN Android', () {
-            _openActions('Outils', [
               _PAct(Icons.health_and_safety_outlined, 'Diagnostic du réseau', _openDiag),
               _PAct(Icons.network_check, 'Test de vitesse', () {
                 Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const SpeedPage()));
@@ -2983,13 +2947,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               _PAct(Icons.vpn_lock, 'Réglages VPN d\'Android (kill switch)', () {
                 _shareCh.invokeMethod<bool>('openVpnSettings').catchError((Object _) => false);
               }),
-            ]);
-          }),
-          const SizedBox(width: 10),
-          _profGroup(Icons.tune, 'Application', 'Paramètres et journal', () {
-            _openActions('Application', [
-              _PAct(Icons.settings_outlined, 'Paramètres', _openSettings),
-              _PAct(Icons.receipt_long_outlined, 'Journal', _openLog),
+              _PAct(Icons.delete_outline, 'Tout effacer', _confirmClear),
             ]);
           }),
         ]),
