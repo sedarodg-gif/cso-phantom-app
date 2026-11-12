@@ -3029,17 +3029,17 @@ class _ServerFormState extends State<ServerForm> {
   static const _defPort = {'vless': 443, 'vmess': 443, 'trojan': 443, 'ss': 8388, 'ssh': 22};
 
   static const _modes = {
-    'direct': 'SSH Direct',
-    'tls': 'SSH + SSL/TLS (SNI)',
-    'payload': 'SSH + Payload HTTP',
-    'ws': 'SSH + WebSocket',
-    'wss': 'SSH + WebSocket + TLS',
-    'proxy': 'SSH + Proxy HTTP (CONNECT)',
-    'custom': 'Personnalisé',
+    'direct': 'SSH-Direct',
+    'proxy': 'SSH-Proxy',
+    'payload': 'SSH-Payload',
+    'proxy_payload': 'SSH-Proxy-Payload',
+    'tls': 'SSH-TLS',
+    'tls_proxy': 'SSH-TLS-Proxy',
+    'tls_payload': 'SSH-TLS-Payload',
+    'tls_proxy_payload': 'SSH-TLS-Proxy-Payload',
+    'dnstt': 'SSH-DNSTT (non pris en charge)',
   };
   static const _plHttp = 'GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]';
-  static const _plWs =
-      'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]';
   static const _plConnect = '[netData][crlf]Host: [host_port][crlf][crlf]';
 
   late String type;
@@ -3091,48 +3091,24 @@ class _ServerFormState extends State<ServerForm> {
   }
 
   String _detectMode() {
-    final pl = payload.text.trim();
-    if (proxy.text.trim().isNotEmpty) return 'proxy';
-    if (pl.isEmpty) return sshTls ? 'tls' : 'direct';
-    if (pl == _plWs) return sshTls ? 'wss' : 'ws';
-    if (pl == _plHttp && !sshTls) return 'payload';
-    return 'custom';
+    final parts = <String>[
+      if (sshTls) 'tls',
+      if (proxy.text.trim().isNotEmpty) 'proxy',
+      if (payload.text.trim().isNotEmpty) 'payload',
+    ];
+    return parts.isEmpty ? 'direct' : parts.join('_');
   }
 
   void _applyMode(String m) {
+    final hasProxy = m.contains('proxy');
+    final hasPayload = m.contains('payload');
     mode = m;
-    switch (m) {
-      case 'direct':
-        payload.text = '';
-        proxy.text = '';
-        sshTls = false;
-        break;
-      case 'tls':
-        payload.text = '';
-        proxy.text = '';
-        sshTls = true;
-        break;
-      case 'payload':
-        payload.text = _plHttp;
-        proxy.text = '';
-        sshTls = false;
-        break;
-      case 'ws':
-        payload.text = _plWs;
-        proxy.text = '';
-        sshTls = false;
-        break;
-      case 'wss':
-        payload.text = _plWs;
-        proxy.text = '';
-        sshTls = true;
-        break;
-      case 'proxy':
-        payload.text = _plConnect;
-        sshTls = false;
-        break;
-      default:
-        break;
+    sshTls = m.startsWith('tls');
+    if (!hasProxy) proxy.text = '';
+    if (!hasPayload) {
+      payload.text = '';
+    } else if (payload.text.trim().isEmpty) {
+      payload.text = hasProxy ? _plConnect : _plHttp;
     }
   }
 
@@ -3149,7 +3125,13 @@ class _ServerFormState extends State<ServerForm> {
   /// Champ réellement affiché (tient compte du mode SSH et de la sécurité).
   bool vis(String f) {
     if (!v(f)) return false;
-    if (type == 'ssh' && (f == 'sni' || f == 'insec')) return sshTls;
+    if (type == 'ssh') {
+      if (f == 'sni' || f == 'insec') return sshTls;
+      if (f == 'proxy') return mode.contains('proxy');
+      if (f == 'payload') return mode.contains('payload');
+      if (f == 'hosth') return sshTls || mode.contains('payload');
+      if (f == 'sshtls') return false;
+    }
     if (f == 'insec') return type == 'trojan' || sec != 'none';
     return true;
   }
@@ -3248,6 +3230,10 @@ class _ServerFormState extends State<ServerForm> {
       setState(() => err = 'Utilisateur obligatoire');
       return;
     }
+    if (type == 'ssh' && mode.contains('proxy') && !proxy.text.contains(':')) {
+      setState(() => err = 'Proxy : indique hôte:port (ex. 10.0.0.1:8080)');
+      return;
+    }
     final h = host.text.trim();
     final old = widget.server;
     final isSsh = type == 'ssh';
@@ -3263,13 +3249,13 @@ class _ServerFormState extends State<ServerForm> {
       method: v('method') ? method : 'aes-256-gcm',
       net: v('net') ? net : 'tcp',
       path: v('path') ? path.text.trim() : '',
-      hosth: v('hosth') ? hosth.text.trim() : '',
+      hosth: vis('hosth') ? hosth.text.trim() : '',
       sec: isSsh ? (sshTls ? 'tls' : 'none') : (v('sec') ? sec : (type == 'trojan' ? 'tls' : 'none')),
       sni: vis('sni') ? sni.text.trim() : '',
       insecure: insecure,
       mux: v('mux') ? mux : false,
-      payload: isSsh ? payload.text.trim() : '',
-      proxy: isSsh ? proxy.text.trim() : '',
+      payload: isSsh && vis('payload') ? payload.text.trim() : '',
+      proxy: isSsh && vis('proxy') ? proxy.text.trim() : '',
       locked: false,
       msg: old?.msg ?? '',
       connMsg: old?.connMsg ?? '',
@@ -3353,7 +3339,14 @@ class _ServerFormState extends State<ServerForm> {
                 '2022-blake3-aes-256-gcm': '2022-blake3-aes-256-gcm',
               }, (x) => setState(() => method = x)),
             if (v('sshmode'))
-              _drop('Mode SSH', mode, _modes, (x) => setState(() => _applyMode(x))),
+              _drop('Mode SSH', mode, _modes, (x) => setState(() {
+                    if (x == 'dnstt') {
+                      err = "SSH-DNSTT (tunnel par DNS) n'est pas encore pris en charge : il demande un client DNSTT dédié.";
+                    } else {
+                      err = '';
+                      _applyMode(x);
+                    }
+                  })),
             if (v('net'))
               _drop('Transport', net, const {
                 'tcp': 'TCP',
@@ -3365,23 +3358,23 @@ class _ServerFormState extends State<ServerForm> {
                 'kcp': 'mKCP',
               }, (x) => setState(() => net = x)),
             if (v('path')) _field('Chemin (path) / service gRPC', path, hint: '/'),
-            if (v('hosth'))
+            if (vis('hosth'))
               _field(type == 'ssh' ? 'Host ([host] du payload)' : 'Host (en-tête)', hosth,
                   hint: 'cdn.exemple.com'),
             if (v('sec'))
               _drop('Sécurité', sec, const {'tls': 'TLS', 'none': 'Aucune', 'reality': 'Reality'},
                   (x) => setState(() => sec = x)),
-            if (v('sshtls'))
+            if (vis('sshtls'))
               _switch('SSL/TLS', 'Enveloppe la connexion SSH dans TLS (avec SNI)', sshTls,
                   (x) => setState(() {
                         sshTls = x;
                         mode = _detectMode();
                       })),
             if (vis('sni')) _field('SNI', sni, hint: 'sni.exemple.com'),
-            if (v('payload'))
+            if (vis('payload'))
               _field('Payload', payload,
                   hint: 'GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]', lines: 3),
-            if (v('payload'))
+            if (vis('payload'))
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: OutlinedButton.icon(
@@ -3390,7 +3383,7 @@ class _ServerFormState extends State<ServerForm> {
                   label: const Text('Éditeur de payload (modèles et aperçu)'),
                 ),
               ),
-            if (v('payload'))
+            if (vis('payload'))
               const Padding(
                 padding: EdgeInsets.only(bottom: 12),
                 child: Text(
@@ -3399,8 +3392,8 @@ class _ServerFormState extends State<ServerForm> {
                   style: TextStyle(fontSize: 12, color: kMute),
                 ),
               ),
-            if (v('proxy'))
-              _field('Proxy (hôte:port)', proxy, hint: 'optionnel : ex. 10.0.0.1:8080'),
+            if (vis('proxy'))
+              _field('Proxy (hôte:port)', proxy, hint: 'ex. 10.0.0.1:8080'),
             if (v('mux'))
               _switch('Mux', "Accélère l'ouverture des pages sur certains serveurs. Désactive-le si la connexion échoue.",
                   mux, (x) => setState(() => mux = x)),
