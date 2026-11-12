@@ -27,10 +27,10 @@ if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
 open(m, 'w', encoding='utf-8').write(s)
 print('Manifest OK')
 
-# --- Gradle : minSdk 23 + extraction des libs natives ---
+# --- Gradle : minSdk 24 + extraction des libs natives ---
 for f in glob.glob('android/app/build.gradle*'):
     t = open(f, encoding='utf-8').read()
-    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>23', t)
+    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>24', t)
     if 'useLegacyPackaging' not in t:
         t = re.sub(r'android\s*\{',
                    'android {\n    packaging { jniLibs { useLegacyPackaging = true } }', t, count=1)
