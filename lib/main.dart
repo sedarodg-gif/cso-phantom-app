@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'server.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
+import 'haunted_bg.dart';
 import 'payload_editor.dart';
 import 'speed_page.dart';
 import 'settings.dart';
@@ -27,7 +28,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.7';
+const kAppVersion = 'V7.8';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -1943,9 +1944,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       backgroundColor: kBg,
       body: Stack(
         children: [
-          _glowBg(const Alignment(-0.9, -1.0), 0.95, gGlows[0]),
-          _glowBg(const Alignment(0.95, -0.55), 0.8, gGlows[1]),
-          _glowBg(const Alignment(0, 0.25), 1.0, gGlows[2]),
+          HauntedBackground(
+            awake: _state == 'on',
+            animate: _st.bgAnim && !MediaQuery.of(context).disableAnimations,
+          ),
           SafeArea(
             child: Stack(
               children: [

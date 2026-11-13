@@ -73,6 +73,7 @@ class AppSettings {
   bool lan = false;
   bool autoReconnect = true;
   bool compat = false; // mode compatibilité : configuration d'origine, sans mes optimisations
+  bool bgAnim = true; // fond animé (manoir hanté)
   bool haptics = true; // vibration légère au toucher de la boule
   bool autoSwitch = true; // change de serveur si la reconnexion échoue
   int reconnectTries = 3;
@@ -117,6 +118,7 @@ class AppSettings {
     autoReconnect = d.autoReconnect;
     autoSwitch = d.autoSwitch;
     haptics = d.haptics;
+    bgAnim = d.bgAnim;
     compat = d.compat;
     reconnectTries = d.reconnectTries;
     dns = d.dns;
@@ -150,6 +152,7 @@ class AppSettings {
         'autoReconnect': autoReconnect,
         'autoSwitch': autoSwitch,
         'haptics': haptics,
+        'bgAnim': bgAnim,
         'compat': compat,
         'reconnectTries': reconnectTries,
         'dns': dns,
@@ -186,6 +189,7 @@ class AppSettings {
     s.autoReconnect = b('autoReconnect', true);
     s.autoSwitch = b('autoSwitch', true);
     s.haptics = b('haptics', true);
+    s.bgAnim = b('bgAnim', true);
     s.compat = b('compat', false);
     s.reconnectTries = i('reconnectTries', 3);
     s.dns = str('dns', 'auto');
