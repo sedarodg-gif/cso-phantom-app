@@ -302,10 +302,10 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.speed_outlined,
             title: 'Unité de vitesse',
             sub: 'Affichage des débits',
-            trailing: _value(st.speedUnit == 'Mb' ? 'Mb/s' : (st.speedUnit == 'KB' ? 'KB/s' : 'MB/s')),
+            trailing: _value(st.speedUnit == 'Mb' ? 'Mb/s' : (st.speedUnit == 'KB' ? 'KB/s' : 'Auto')),
             onTap: () async {
               final v = await _pick<String>(context, 'Unité de vitesse',
-                  {'MB': 'MB/s (méga-octets)', 'Mb': 'Mb/s (mégabits)', 'KB': 'KB/s (kilo-octets)'}, st.speedUnit);
+                  {'MB': 'Automatique (B, KB ou MB/s)', 'Mb': 'Mb/s (mégabits)', 'KB': 'KB/s (kilo-octets)'}, st.speedUnit);
               if (v != null) _set(() => st.speedUnit = v);
             },
           ),
@@ -1047,6 +1047,10 @@ class _IpPageState extends State<IpPage> {
   String _found = '';
   String _huntMsg = '';
   final List<String> _huntLog = [];
+  final _maxTries = TextEditingController(text: '0');
+  final _pauseS = TextEditingController(text: '2');
+  bool _connectOnFound = false;
+  List<String> _history = [];
 
   @override
   void initState() {
@@ -1058,6 +1062,10 @@ class _IpPageState extends State<IpPage> {
     try {
       final sp = await SharedPreferences.getInstance();
       _list.text = sp.getString('hunter_list') ?? '';
+      _maxTries.text = sp.getString('hunter_max') ?? '0';
+      _pauseS.text = sp.getString('hunter_pause') ?? '2';
+      _connectOnFound = sp.getBool('hunter_connect') ?? false;
+      _history = sp.getStringList('hunter_hist') ?? [];
     } catch (_) {}
     await _refreshAcc();
     await _readIp();
@@ -1119,6 +1127,9 @@ class _IpPageState extends State<IpPage> {
     try {
       final sp = await SharedPreferences.getInstance();
       await sp.setString('hunter_list', _list.text);
+      await sp.setString('hunter_max', _maxTries.text);
+      await sp.setString('hunter_pause', _pauseS.text);
+      await sp.setBool('hunter_connect', _connectOnFound);
     } catch (_) {}
     setState(() {
       _hunting = true;
@@ -1132,7 +1143,16 @@ class _IpPageState extends State<IpPage> {
       _onFound(ip);
       return;
     }
+    final maxT = int.tryParse(_maxTries.text.trim()) ?? 0;
+    final pause = (int.tryParse(_pauseS.text.trim()) ?? 2).clamp(0, 60).toInt();
     while (_hunting && mounted) {
+      if (maxT > 0 && _tries >= maxT) {
+        setState(() {
+          _hunting = false;
+          _huntMsg = 'Arrêté après $maxT essais sans trouver.';
+        });
+        return;
+      }
       _tries++;
       _hlog('Essai $_tries : mode avion...');
       String r = '';
@@ -1163,13 +1183,26 @@ class _IpPageState extends State<IpPage> {
         continue;
       }
       _hlog('IP : $ip');
+      _addHist(ip);
       if (_match(ip, t)) {
         _onFound(ip);
         return;
       }
-      await Future.delayed(const Duration(seconds: 1));
+      await Future.delayed(Duration(seconds: pause));
     }
     if (mounted) setState(() => _hunting = false);
+  }
+
+  Future<void> _addHist(String ip) async {
+    final t = DateTime.now();
+    final hh = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    _history.insert(0, '$hh  $ip');
+    if (_history.length > 30) _history.removeRange(30, _history.length);
+    if (mounted) setState(() {});
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setStringList('hunter_hist', _history);
+    } catch (_) {}
   }
 
   void _onFound(String ip) {
@@ -1180,12 +1213,20 @@ class _IpPageState extends State<IpPage> {
     });
     HapticFeedback.heavyImpact();
     _ch.invokeMethod('toFront').catchError((_) {});
+    if (_connectOnFound) {
+      Future.delayed(const Duration(seconds: 2), () {
+        final f = gConnectHook;
+        if (f != null) f();
+      });
+    }
   }
 
   @override
   void dispose() {
     _hunting = false;
     _list.dispose();
+    _maxTries.dispose();
+    _pauseS.dispose();
     _host.dispose();
     super.dispose();
   }
@@ -1298,6 +1339,45 @@ class _IpPageState extends State<IpPage> {
                 Text('IP mobile actuelle : ${_curIp.isEmpty ? '(pas de données mobiles)' : _curIp}',
                     style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
                 const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _maxTries,
+                      enabled: !_hunting,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: 'Essais max (0 = sans limite)',
+                        isDense: true,
+                        filled: true,
+                        fillColor: Colors.white.withAlpha(18),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _pauseS,
+                      enabled: !_hunting,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: 'Pause (secondes)',
+                        isDense: true,
+                        filled: true,
+                        fillColor: Colors.white.withAlpha(18),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                ]),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Connecter le VPN dès que trouvé', style: TextStyle(fontSize: 14)),
+                  value: _connectOnFound,
+                  onChanged: (v) => setState(() => _connectOnFound = v),
+                ),
+                const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton(
@@ -1327,6 +1407,24 @@ class _IpPageState extends State<IpPage> {
                     child: Text(_huntLog.take(8).join('\n'),
                         style: const TextStyle(fontSize: 11, color: kMute, height: 1.4)),
                   ),
+                if (_history.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    const Expanded(child: Text('Historique des IP', style: TextStyle(fontWeight: FontWeight.w600))),
+                    TextButton(
+                      onPressed: () async {
+                        setState(() => _history = []);
+                        try {
+                          final sp = await SharedPreferences.getInstance();
+                          await sp.remove('hunter_hist');
+                        } catch (_) {}
+                      },
+                      child: const Text('Effacer'),
+                    ),
+                  ]),
+                  Text(_history.take(10).join('\n'),
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: kMute, height: 1.5)),
+                ],
                 const SizedBox(height: 8),
                 const Text(
                   'Coupe le Wi-Fi et le VPN avant. L\'appli met le mode avion puis le retire, jusqu\'à ce que l\'IP mobile commence comme une IP de ta liste.',

@@ -12,6 +12,7 @@ dependencies:
   flutter_vless: ^1.1.5
   shared_preferences: ^2.2.0
   dartssh2: ^4.1.0
+  mobile_scanner: ^5.2.3
 
 flutter:
   uses-material-design: true

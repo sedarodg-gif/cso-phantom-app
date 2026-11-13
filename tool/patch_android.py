@@ -10,6 +10,9 @@ s = re.sub(r'android:label="[^"]*"', 'android:label="CSO Phantom"', s, count=1)
 if 'android.permission.INTERNET' not in s:
     s = s.replace('<application',
                   '<uses-permission android:name="android.permission.INTERNET"/>\n    <application', 1)
+if 'android.permission.CAMERA' not in s:
+    s = s.replace('<application',
+                  '<uses-permission android:name="android.permission.CAMERA"/>\n    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n    <application', 1)
 if 'QUERY_ALL_PACKAGES' not in s:
     s = s.replace('<application',
                   '<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>\n    <application', 1)
@@ -298,24 +301,65 @@ class HunterService : AccessibilityService() {
         }
     }
 
-    private fun findTile(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (root == null) return null
-        val keys = listOf("Mode avion", "Mode Avion", "Airplane", "Avion", "Flight", "avion")
+    private fun norm(t: CharSequence?): String {
+        if (t == null) return ""
+        return t.toString().lowercase().replace("-", " ").replace("_", " ").trim()
+    }
+
+    private fun matchesTile(n: AccessibilityNodeInfo): Boolean {
+        val keys = listOf("mode avion", "hors ligne", "horsligne", "airplane", "flight mode", "offline mode", "avion")
+        val a = norm(n.text)
+        val b = norm(n.contentDescription)
         for (k in keys) {
-            val list = root.findAccessibilityNodeInfosByText(k)
-            if (list != null) {
-                for (n in list) {
-                    var cur: AccessibilityNodeInfo? = n
-                    var i = 0
-                    while (cur != null && i < 6) {
-                        if (cur.isClickable) return cur
-                        cur = cur.parent
-                        i++
-                    }
-                }
-            }
+            if (a.contains(k) || b.contains(k)) return true
+        }
+        return false
+    }
+
+    private fun clickableUp(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        var cur = n
+        var i = 0
+        while (cur != null && i < 6) {
+            if (cur.isClickable) return cur
+            cur = cur.parent
+            i++
         }
         return null
+    }
+
+    private fun walk(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        if (matchesTile(n)) {
+            val c = clickableUp(n)
+            if (c != null) return c
+        }
+        for (i in 0 until n.childCount) {
+            val r = walk(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findTile(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (root == null) return null
+        val direct = walk(root, 0)
+        if (direct != null) return direct
+        for (w in windows) {
+            val r = walk(w.root, 0)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun scrollPanel(root: AccessibilityNodeInfo?): Boolean {
+        if (root == null) return false
+        if (root.isScrollable) {
+            if (root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) return true
+        }
+        for (i in 0 until root.childCount) {
+            if (scrollPanel(root.getChild(i))) return true
+        }
+        return false
     }
 
     private fun clickTile(attempt: Int, cb: (Boolean) -> Unit) {
@@ -324,7 +368,8 @@ class HunterService : AccessibilityService() {
             val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             cb(ok)
         } else if (attempt < 8) {
-            h.postDelayed({ clickTile(attempt + 1, cb) }, 400L)
+            if (attempt == 3 || attempt == 5) scrollPanel(rootInActiveWindow)
+            h.postDelayed({ clickTile(attempt + 1, cb) }, 450L)
         } else {
             cb(false)
         }

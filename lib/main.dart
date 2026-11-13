@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'server.dart';
 import 'diag_page.dart';
 import 'export_page.dart';
+import 'qr_scan_page.dart';
 import 'haunted_bg.dart';
 import 'payload_editor.dart';
 import 'speed_page.dart';
@@ -28,7 +29,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V7.9';
+const kAppVersion = 'V8.0';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -101,9 +102,15 @@ String gSpeedUnit = 'MB';
     case 'KB':
       return (v: (bps / 1024).toStringAsFixed(0), u: 'KB/s');
     default:
-      return (v: (bps / 1048576).toStringAsFixed(2), u: 'MB/s');
+      // unité automatique : un petit débit s'affiche en KB/s ou en B/s au lieu de 0.00 MB/s
+      if (bps >= 1048576) return (v: (bps / 1048576).toStringAsFixed(2), u: 'MB/s');
+      if (bps >= 1024) return (v: (bps / 1024).toStringAsFixed(0), u: 'KB/s');
+      return (v: bps.toStringAsFixed(0), u: 'B/s');
   }
 }
+
+/// Appelé par le chasseur d'IP : lance la connexion VPN si elle ne l'est pas déjà.
+VoidCallback? gConnectHook;
 
 String fmtRate(double b) {
   final p = speedParts(b);
@@ -821,6 +828,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    gConnectHook = () {
+      if (mounted && _state == 'off') _toggle();
+    };
     // à l'ouverture : on reprend un VPN encore actif au lieu de le couper
     _load().then((_) => _startupSync());
   }
@@ -1867,6 +1877,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _scanQr() async {
+    final t = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(builder: (_) => const QrScanPage()),
+    );
+    if (t == null || t.trim().isEmpty) return;
+    _doImport(t);
+  }
+
   Future<void> _importFile() async {
     try {
       final t = await _shareCh.invokeMethod<String>('openFile');
@@ -2475,6 +2493,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         OutlinedButton.icon(
           onPressed: () => _openActions('Importer / Exporter', [
             _PAct(Icons.link, 'Importer un lien', _openImport),
+            _PAct(Icons.qr_code_scanner, 'Scanner un QR code', _scanQr),
             _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
             _PAct(Icons.ios_share, 'Exporter (lien ou fichier)', () => _openShare(_servers)),
           ]),
