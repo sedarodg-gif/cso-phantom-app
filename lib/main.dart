@@ -759,13 +759,12 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   static const _shareCh = MethodChannel('cso/share');
 
   SharedPreferences? _prefs;
   List<Server> _servers = [];
   String? _selId;
-  List<Map<String, dynamic>> _subs = []; // abonnements (nom, lien, ids des serveurs)
   int _tab = 0;
 
   // connexion : off | connecting | on
@@ -822,14 +821,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     // à l'ouverture : on reprend un VPN encore actif au lieu de le couper
     _load().then((_) => _startupSync());
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _checkExternal();
   }
 
   /// Vrai si une interface VPN (tun) est présente sur le téléphone.
@@ -860,7 +853,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       if (d > 0) {
         setState(() => _setOn(resume: startMs > 0 ? startMs : DateTime.now().millisecondsSinceEpoch));
         _log('VPN toujours actif : session reprise (le chrono continue)');
-        _checkExternal();
         return;
       }
     }
@@ -869,45 +861,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final p = await SharedPreferences.getInstance();
       await p.setBool('vpnOn', false);
     } catch (_) {}
-    final used = await _checkExternal();
-    if (!used && _st.autoConnect && _selected != null && mounted) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      if (mounted && _state == 'off') _toggle();
-    }
-  }
-
-  // ---------- notification, tuile des réglages rapides ----------
-  Future<bool> _checkExternal() async {
-    String? a;
-    try {
-      a = await _shareCh.invokeMethod<String>('takeAction');
-    } catch (_) {}
-    if (a == null || a.isEmpty || !mounted) return false;
-    if (a == 'stop') {
-      if (_state == 'on') _toggle();
-    } else if (a == 'toggle') {
-      _toggle();
-    }
-    return true;
-  }
-
-  void _updateNotif() {
-    if (!_st.notif || _state != 'on') return;
-    final sv = _selected;
-    _shareCh.invokeMethod<bool>('notify', {
-      'title': 'CSO Phantom connecté',
-      'text': '↓ ${fmtRate(_dlShown.toDouble())}   ↑ ${fmtRate(_ulShown.toDouble())}${sv == null ? '' : ' · ${sv.name}'}',
-      'since': _startMs > 0 ? _startMs : DateTime.now().millisecondsSinceEpoch,
-    }).catchError((Object _) => false);
-  }
-
-  void _clearNotif() {
-    _shareCh.invokeMethod<bool>('cancelNotif').catchError((Object _) => false);
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _timeout?.cancel();
     for (final e in _sshEngines) {
@@ -921,12 +878,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     _prefs = p;
-    try {
-      final sj2 = p.getString('subs');
-      if (sj2 != null) {
-        _subs = (jsonDecode(sj2) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      }
-    } catch (_) {}
     final raw = p.getString('servers');
     if (raw != null) {
       try {
@@ -1262,10 +1213,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _state = 'on';
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     _startMs = resume > 0 ? resume : nowMs;
-    if (_st.notif) {
-      _shareCh.invokeMethod<bool>('askNotif').catchError((Object _) => false);
-      Future<void>.delayed(const Duration(milliseconds: 600), _updateNotif);
-    }
     SharedPreferences.getInstance().then((p) {
       p.setBool('vpnOn', true);
       if (resume == 0) p.setInt('vpnStart', nowMs);
@@ -1345,7 +1292,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _ulData.add(ul);
       _ulData.removeAt(0);
     });
-    if (_sec % 2 == 0) _updateNotif();
     if (_state == 'on' && !_userStop) {
       final lim = _st.autoStopMin;
       final cap = _st.dataLimitMb;
@@ -1371,7 +1317,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _ticker?.cancel();
     _stopSsh();
     _state = 'off';
-    _clearNotif();
     SharedPreferences.getInstance().then((p) => p.setBool('vpnOn', false));
     _startMs = 0;
     _sec = 0;
@@ -1922,203 +1867,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  // ---------- abonnements ----------
-  void _saveSubs() {
-    SharedPreferences.getInstance().then((p) => p.setString('subs', jsonEncode(_subs)));
-  }
-
-  Future<String> _fetchText(String url) async {
-    final c = HttpClient()..connectionTimeout = const Duration(seconds: 12);
-    try {
-      final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 15));
-      req.headers.set('User-Agent', 'v2rayNG/1.8.5');
-      final res = await req.close().timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200) throw 'réponse ${res.statusCode}';
-      final bytes = <int>[];
-      await for (final ch in res.timeout(const Duration(seconds: 20))) {
-        bytes.addAll(ch);
-        if (bytes.length > 4 * 1024 * 1024) break;
-      }
-      return utf8.decode(bytes, allowMalformed: true);
-    } finally {
-      c.close(force: true);
-    }
-  }
-
-  String _subDecode(String body) {
-    final t = body.trim();
-    if (t.contains('://')) return t;
-    try {
-      var b = t.replaceAll(RegExp(r'\s'), '').replaceAll('-', '+').replaceAll('_', '/');
-      while (b.length % 4 != 0) {
-        b += '=';
-      }
-      return utf8.decode(base64.decode(b), allowMalformed: true);
-    } catch (_) {
-      return t;
-    }
-  }
-
-  Future<int> _syncSub(Map<String, dynamic> sub) async {
-    final text = _subDecode(await _fetchText(sub['url'] as String));
-    final fresh = <Server>[];
-    for (final tk in text.split(RegExp(r'\s+'))) {
-      if (!tk.contains('://')) continue;
-      final many = parseBundle(tk);
-      if (many != null) {
-        fresh.addAll(many);
-        continue;
-      }
-      final one = parseLink(tk);
-      if (one != null) fresh.add(one);
-    }
-    if (fresh.isEmpty) throw 'aucun serveur valide dans ce lien';
-    final name = sub['name'] as String;
-    final old = Set<String>.from((sub['ids'] as List).map((e) => e.toString()));
-    setState(() {
-      final selWasOld = _selId != null && old.contains(_selId);
-      _servers.removeWhere((x) => old.contains(x.id));
-      for (final n in fresh) {
-        n.group = name;
-        _servers.add(n);
-      }
-      sub['ids'] = fresh.map((x) => x.id).toList();
-      if (_selId == null || (selWasOld && !_servers.any((x) => x.id == _selId))) _selId = fresh.first.id;
-    });
-    _save();
-    _saveSubs();
-    return fresh.length;
-  }
-
-  Future<void> _addSub(String name, String url) async {
-    if (_state != 'off') {
-      _toast("Déconnecte-toi d'abord");
-      return;
-    }
-    _toast('Téléchargement...');
-    final sub = <String, dynamic>{'name': name, 'url': url, 'ids': <String>[]};
-    try {
-      final k = await _syncSub(sub);
-      _subs.add(sub);
-      _saveSubs();
-      _toast('$k serveur(s) ajouté(s)');
-    } catch (e) {
-      _toast('Échec : $e');
-    }
-  }
-
-  void _addSubDialog() {
-    final nameC = TextEditingController();
-    final urlC = TextEditingController();
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF10121A),
-        title: const Text('Abonnement'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameC, decoration: const InputDecoration(labelText: 'Nom (devient le dossier)')),
-            TextField(
-              controller: urlC,
-              autocorrect: false,
-              decoration: const InputDecoration(labelText: 'Lien https://...'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          FilledButton(
-            onPressed: () {
-              final u = urlC.text.trim();
-              final n = nameC.text.trim().isEmpty ? 'Abonnement' : nameC.text.trim();
-              if (!u.startsWith('http')) {
-                _toast('Le lien doit commencer par http');
-                return;
-              }
-              Navigator.pop(ctx);
-              _addSub(n, u);
-            },
-            child: const Text('Ajouter'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _updateSubs() async {
-    if (_subs.isEmpty) {
-      _toast("Aucun abonnement : ajoute d'abord un lien");
-      return;
-    }
-    if (_state != 'off') {
-      _toast("Déconnecte-toi d'abord");
-      return;
-    }
-    _toast('Mise à jour...');
-    var n = 0;
-    var bad = 0;
-    for (final sb in List<Map<String, dynamic>>.from(_subs)) {
-      try {
-        n += await _syncSub(sb);
-      } catch (_) {
-        bad++;
-      }
-    }
-    _toast('$n serveur(s) à jour${bad > 0 ? ' · $bad échec(s)' : ''}');
-  }
-
-  void _removeSub(Map<String, dynamic> sb) {
-    setState(() => _subs.remove(sb));
-    _saveSubs();
-    _toast('Abonnement retiré (les serveurs restent dans la liste)');
-  }
-
-  // ---------- sauvegarde / restauration ----------
-  void _backup() {
-    final list = _servers.where((x) => !x.locked && !x.lockSsh).map((x) => x.toJson()).toList();
-    final data = jsonEncode({'cso_backup': 1, 'servers': list, 'settings': _st.toJson(), 'subs': _subs});
-    _saveText(data);
-  }
-
-  bool _tryRestore(String t) {
-    final txt = t.trim();
-    if (!txt.startsWith('{') || !txt.contains('cso_backup')) return false;
-    if (_state != 'off') {
-      _toast("Déconnecte-toi d'abord pour restaurer");
-      return true;
-    }
-    try {
-      final m = jsonDecode(txt) as Map;
-      final list = (m['servers'] as List).map((e) => Server.fromJson(Map<String, dynamic>.from(e as Map))).toList();
-      setState(() {
-        final keep = _servers.where((x) => x.locked || x.lockSsh).toList();
-        _servers
-          ..clear()
-          ..addAll(keep)
-          ..addAll(list);
-        if (m['settings'] is Map) {
-          _st = AppSettings.fromJson(Map<String, dynamic>.from(m['settings'] as Map));
-        }
-        _subs = (m['subs'] is List)
-            ? (m['subs'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList()
-            : <Map<String, dynamic>>[];
-        _selId = _servers.isEmpty ? null : _servers.first.id;
-      });
-      _save();
-      _saveSubs();
-      _toast('${list.length} serveur(s) restauré(s)');
-    } catch (e) {
-      _toast('Sauvegarde illisible : $e');
-    }
-    return true;
-  }
-
   Future<void> _importFile() async {
     try {
       final t = await _shareCh.invokeMethod<String>('openFile');
       if (t == null || t.trim().isEmpty) return;
-      if (_tryRestore(t)) return;
       _doImport(t);
     } catch (e) {
       _toast('Impossible de lire le fichier : $e');
@@ -2724,13 +2476,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           onPressed: () => _openActions('Importer / Exporter', [
             _PAct(Icons.link, 'Importer un lien', _openImport),
             _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
-            _PAct(Icons.ios_share, 'Exporter (lien, fichier ou QR)', () => _openShare(_servers)),
-            _PAct(Icons.rss_feed, 'Abonnement : ajouter un lien', _addSubDialog),
-            _PAct(Icons.refresh, 'Abonnements : mettre à jour', _updateSubs),
-            for (final sb in _subs)
-              _PAct(Icons.link_off, "Retirer l'abonnement « ${sb['name']} »", () => _removeSub(sb)),
-            _PAct(Icons.save_alt, 'Sauvegarde : enregistrer tout', _backup),
-            _PAct(Icons.settings_backup_restore, 'Sauvegarde : restaurer depuis un fichier', _importFile),
+            _PAct(Icons.ios_share, 'Exporter (lien ou fichier)', () => _openShare(_servers)),
           ]),
           icon: const Icon(Icons.swap_vert),
           label: const Text('Importer / Exporter'),
@@ -3091,10 +2837,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       context: context,
       backgroundColor: const Color(0xFF10121A),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
-      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-         child: Column(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -3113,7 +2857,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ),
             const SizedBox(height: 8),
           ],
-         ),
         ),
       ),
     );

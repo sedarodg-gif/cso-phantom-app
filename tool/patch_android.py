@@ -1,5 +1,4 @@
 import glob
-import os
 import re
 
 # --- AndroidManifest : libs natives, internet, nom de l'appli ---
@@ -14,16 +13,23 @@ if 'android.permission.INTERNET' not in s:
 if 'QUERY_ALL_PACKAGES' not in s:
     s = s.replace('<application',
                   '<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>\n    <application', 1)
-if 'POST_NOTIFICATIONS' not in s:
-    s = s.replace('<application',
-                  '<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application', 1)
-if 'ConnectTileService' not in s:
-    tile = ('<service android:name=".ConnectTileService" android:label="CSO Phantom" '
-            'android:icon="@android:drawable/ic_lock_lock" android:exported="true" '
-            'android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">'
-            '<intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>'
-            '</service>')
-    s = s.replace('</application>', '    ' + tile + '\n    </application>', 1)
+_svc_pkg = 'com.csophantom.cso_phantom'
+_mp = re.search(r'namespace\s*=?\s*"([^"]+)"', ''.join(open(f, encoding='utf-8').read() for f in glob.glob('android/app/build.gradle*')))
+if _mp:
+    _svc_pkg = _mp.group(1)
+_acts0 = glob.glob('android/app/src/main/**/MainActivity.*', recursive=True)
+if _acts0:
+    _pm0 = re.search(r'^\s*package\s+([\w.]+)', open(_acts0[0], encoding='utf-8').read(), re.M)
+    if _pm0:
+        _svc_pkg = _pm0.group(1)
+if 'HunterService' not in s:
+    s = s.replace('</application>', """    <service android:name="%s.HunterService" android:exported="true"
+            android:label="CSO Phantom Chasseur IP"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/hunter_config"/>
+        </service>
+    </application>""" % _svc_pkg, 1)
 open(m, 'w', encoding='utf-8').write(s)
 print('Manifest OK')
 
@@ -65,23 +71,6 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var pending: MethodChannel.Result? = null
     private var pendingText: String? = null
-    private var pendingAction: String? = null
-
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
-        super.onCreate(savedInstanceState)
-        readAction(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        readAction(intent)
-    }
-
-    private fun readAction(i: Intent?) {
-        val a = i?.action
-        if (a == "cso.STOP") pendingAction = "stop"
-        if (a == "cso.TOGGLE") pendingAction = "toggle"
-    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -140,67 +129,56 @@ class MainActivity : FlutterActivity() {
                     "deviceId" -> {
                         result.success(Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "")
                     }
-                    "notify" -> {
+                    "hunterOn" -> {
+                        result.success(HunterService.inst != null)
+                    }
+                    "hunterSettings" -> {
                         try {
-                            val title = call.argument<String>("title") ?: "CSO Phantom"
-                            val text = call.argument<String>("text") ?: ""
-                            val since = call.argument<Number>("since")?.toLong() ?: System.currentTimeMillis()
-                            val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-                            if (android.os.Build.VERSION.SDK_INT >= 26) {
-                                nm.createNotificationChannel(
-                                    android.app.NotificationChannel("cso_live", "CSO Phantom", android.app.NotificationManager.IMPORTANCE_LOW)
-                                )
-                            }
-                            var fl = android.app.PendingIntent.FLAG_UPDATE_CURRENT
-                            if (android.os.Build.VERSION.SDK_INT >= 23) fl = fl or android.app.PendingIntent.FLAG_IMMUTABLE
-                            val open = Intent(this, MainActivity::class.java)
-                            open.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            val stop = Intent(this, MainActivity::class.java)
-                            stop.action = "cso.STOP"
-                            stop.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            val pi = android.app.PendingIntent.getActivity(this, 1, open, fl)
-                            val spi = android.app.PendingIntent.getActivity(this, 2, stop, fl)
-                            val b = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, "cso_live") else android.app.Notification.Builder(this)
-                            val ic = if (applicationInfo.icon != 0) applicationInfo.icon else android.R.drawable.stat_sys_download
-                            b.setContentTitle(title)
-                            b.setContentText(text)
-                            b.setSmallIcon(ic)
-                            b.setOngoing(true)
-                            b.setOnlyAlertOnce(true)
-                            b.setShowWhen(true)
-                            b.setWhen(since)
-                            b.setUsesChronometer(true)
-                            b.setContentIntent(pi)
-                            b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Déconnecter", spi)
-                            nm.notify(4242, b.build())
+                            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             result.success(true)
                         } catch (e: Exception) {
-                            result.success(false)
+                            result.error("acc", e.message, null)
                         }
                     }
-                    "cancelNotif" -> {
+                    "hunterCycle" -> {
+                        val sv = HunterService.inst
+                        if (sv == null) {
+                            result.error("acc", "service inactif", null)
+                        } else {
+                            sv.cycle(3000L) { r -> result.success(r) }
+                        }
+                    }
+                    "mobileIp" -> {
+                        val out = ArrayList<String>()
                         try {
-                            val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-                            nm.cancel(4242)
+                            val en = java.net.NetworkInterface.getNetworkInterfaces()
+                            while (en != null && en.hasMoreElements()) {
+                                val ni = en.nextElement()
+                                val n = ni.name ?: continue
+                                if (!ni.isUp || ni.isLoopback) continue
+                                if (n.startsWith("wlan") || n.startsWith("tun") || n.startsWith("p2p") ||
+                                    n.startsWith("dummy") || n.startsWith("bt") || n.startsWith("ap") ||
+                                    n.startsWith("swlan") || n.startsWith("lo")) continue
+                                val ad = ni.inetAddresses
+                                while (ad.hasMoreElements()) {
+                                    val a = ad.nextElement()
+                                    if (a is java.net.Inet4Address && !a.isLoopbackAddress) out.add(a.hostAddress ?: "")
+                                }
+                            }
                         } catch (e: Exception) {
                         }
-                        result.success(true)
+                        result.success(out)
                     }
-                    "askNotif" -> {
+                    "toFront" -> {
                         try {
-                            if (android.os.Build.VERSION.SDK_INT >= 33 &&
-                                checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED
-                            ) {
-                                requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7003)
+                            val li = packageManager.getLaunchIntentForPackage(packageName)
+                            if (li != null) {
+                                li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                                startActivity(li)
                             }
                         } catch (e: Exception) {
                         }
                         result.success(true)
-                    }
-                    "takeAction" -> {
-                        val a = pendingAction
-                        pendingAction = null
-                        result.success(a)
                     }
                     else -> result.notImplemented()
                 }
@@ -237,42 +215,6 @@ class MainActivity : FlutterActivity() {
     if act.endswith('.kt'):
         open(act, 'w', encoding='utf-8').write(kt)
         print('MainActivity OK :', act)
-        tile_kt = '''package %s
-
-import android.app.PendingIntent
-import android.content.Intent
-import android.os.Build
-import android.service.quicksettings.Tile
-import android.service.quicksettings.TileService
-
-class ConnectTileService : TileService() {
-    override fun onStartListening() {
-        super.onStartListening()
-        val t = qsTile
-        if (t != null) {
-            t.state = Tile.STATE_INACTIVE
-            t.label = "CSO Phantom"
-            t.updateTile()
-        }
-    }
-
-    override fun onClick() {
-        super.onClick()
-        val i = Intent(this, MainActivity::class.java)
-        i.action = "cso.TOGGLE"
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        if (Build.VERSION.SDK_INT >= 34) {
-            val pi = PendingIntent.getActivity(this, 3, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            startActivityAndCollapse(pi)
-        } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(i)
-        }
-    }
-}
-''' % pkg
-        open(os.path.join(os.path.dirname(act), 'ConnectTileService.kt'), 'w', encoding='utf-8').write(tile_kt)
-        print('Tuile OK')
     else:
         print('MainActivity non-Kotlin, partage via presse-papiers')
 else:
@@ -301,3 +243,140 @@ xml = '''<?xml version="1.0" encoding="utf-8"?>
 for f in glob.glob(res + '/drawable*/launch_background.xml'):
     open(f, 'w', encoding='utf-8').write(xml)
     print('Splash :', f)
+
+
+# --- Chasseur d'IP : service d'accessibilite (bascule le mode avion) ---
+_svc_kt = '''package PKGNAME
+
+import android.accessibilityservice.AccessibilityService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+
+class HunterService : AccessibilityService() {
+    companion object {
+        @Volatile
+        var inst: HunterService? = null
+    }
+
+    private val h = Handler(Looper.getMainLooper())
+
+    override fun onServiceConnected() {
+        inst = this
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        inst = null
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        inst = null
+        super.onDestroy()
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+    override fun onInterrupt() {}
+
+    private fun airplaneOn(): Boolean {
+        return try {
+            Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) == 1
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun closePanel() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+        } else {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
+    }
+
+    private fun findTile(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (root == null) return null
+        val keys = listOf("Mode avion", "Mode Avion", "Airplane", "Avion", "Flight", "avion")
+        for (k in keys) {
+            val list = root.findAccessibilityNodeInfosByText(k)
+            if (list != null) {
+                for (n in list) {
+                    var cur: AccessibilityNodeInfo? = n
+                    var i = 0
+                    while (cur != null && i < 6) {
+                        if (cur.isClickable) return cur
+                        cur = cur.parent
+                        i++
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun clickTile(attempt: Int, cb: (Boolean) -> Unit) {
+        val node = findTile(rootInActiveWindow)
+        if (node != null) {
+            val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            cb(ok)
+        } else if (attempt < 8) {
+            h.postDelayed({ clickTile(attempt + 1, cb) }, 400L)
+        } else {
+            cb(false)
+        }
+    }
+
+    fun cycle(waitMs: Long, done: (String) -> Unit) {
+        val wasOn = airplaneOn()
+        performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+        h.postDelayed({
+            clickTile(0) { ok1 ->
+                if (!ok1) {
+                    closePanel()
+                    done("notile")
+                } else if (wasOn) {
+                    h.postDelayed({
+                        closePanel()
+                        done("ok")
+                    }, 700L)
+                } else {
+                    h.postDelayed({
+                        clickTile(0) { ok2 ->
+                            h.postDelayed({
+                                closePanel()
+                                done(if (ok2) "ok" else "notile")
+                            }, 700L)
+                        }
+                    }, waitMs)
+                }
+            }
+        }, 1000L)
+    }
+}
+'''
+_cfg = '''<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
+    android:description="@string/hunter_desc" />
+'''
+_str = '''<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hunter_desc">Permet au chasseur IP de CSO Phantom de couper et remettre le mode avion tout seul. Rien d autre n est lu ni enregistre.</string>
+</resources>
+'''
+_res = 'android/app/src/main/res'
+os.makedirs(_res + '/xml', exist_ok=True)
+os.makedirs(_res + '/values', exist_ok=True)
+open(_res + '/xml/hunter_config.xml', 'w', encoding='utf-8').write(_cfg)
+open(_res + '/values/cso_hunter.xml', 'w', encoding='utf-8').write(_str)
+if acts and acts[0].endswith('.kt'):
+    open(os.path.join(os.path.dirname(acts[0]), 'HunterService.kt'), 'w', encoding='utf-8').write(_svc_kt.replace('PKGNAME', pkg))
+    print('HunterService OK')

@@ -4,6 +4,7 @@ import 'dart:io' show HttpClient, InternetAddress;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'main.dart';
 import 'settings.dart';
@@ -759,14 +760,6 @@ class _BehaviorPageState extends State<BehaviorPage> {
               "Utilise la configuration d'origine du serveur, sans mes optimisations (mode rapide, DNS, blocage QUIC, tampon). À essayer si rien ne passe.",
               st.compat, (v) => _set(() => st.compat = v),
               icon: Icons.shield_outlined),
-          sSwitch('Notification pendant la connexion',
-              'Affiche le chrono et la vitesse dans la barre du haut, avec un bouton Déconnecter',
-              st.notif, (v) => _set(() => st.notif = v),
-              icon: Icons.notifications_active_outlined),
-          sSwitch('Connexion automatique à l\'ouverture',
-              "Quand tu ouvres l'appli, elle se connecte toute seule au serveur choisi",
-              st.autoConnect, (v) => _set(() => st.autoConnect = v),
-              icon: Icons.bolt),
           sSwitch('Fond animé', "Manoir hanté animé en arrière-plan. Coupe-le pour économiser la batterie.",
               st.bgAnim, (v) => _set(() => st.bgAnim = v),
               icon: Icons.nights_stay_outlined),
@@ -1045,8 +1038,154 @@ class _IpPageState extends State<IpPage> {
   String _resErr = '';
   bool _resolving = false;
 
+  // ---- chasseur : mode avion automatique ----
+  final _list = TextEditingController();
+  bool _hunting = false;
+  bool _accOn = false;
+  int _tries = 0;
+  String _curIp = '';
+  String _found = '';
+  String _huntMsg = '';
+  final List<String> _huntLog = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initHunter();
+  }
+
+  Future<void> _initHunter() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      _list.text = sp.getString('hunter_list') ?? '';
+    } catch (_) {}
+    await _refreshAcc();
+    await _readIp();
+  }
+
+  Future<void> _refreshAcc() async {
+    try {
+      final v = await _ch.invokeMethod<bool>('hunterOn');
+      if (mounted) setState(() => _accOn = v == true);
+    } catch (_) {}
+  }
+
+  Future<String> _readIp() async {
+    try {
+      final r = await _ch.invokeMethod<List<dynamic>>('mobileIp');
+      final l = (r ?? []).map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+      final ip = l.isEmpty ? '' : l.first;
+      if (mounted) setState(() => _curIp = ip);
+      return ip;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  List<String> _targets() {
+    return _list.text
+        .split(RegExp(r'[\s,;]+'))
+        .map((e) => e.trim().replaceAll('*', ''))
+        .where((e) => e.isNotEmpty)
+        .toList();
+  }
+
+  bool _match(String ip, List<String> t) {
+    for (final p in t) {
+      if (ip == p || ip.startsWith(p.endsWith('.') ? p : '$p.') || ip.startsWith(p)) return true;
+    }
+    return false;
+  }
+
+  void _hlog(String m) {
+    if (!mounted) return;
+    setState(() {
+      _huntLog.insert(0, m);
+      if (_huntLog.length > 40) _huntLog.removeLast();
+    });
+  }
+
+  Future<void> _startHunt() async {
+    final t = _targets();
+    if (t.isEmpty) {
+      setState(() => _huntMsg = 'Colle d\'abord ta liste d\'IP.');
+      return;
+    }
+    await _refreshAcc();
+    if (!_accOn) {
+      setState(() => _huntMsg = 'Active d\'abord le service (bouton ci-dessus).');
+      return;
+    }
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString('hunter_list', _list.text);
+    } catch (_) {}
+    setState(() {
+      _hunting = true;
+      _found = '';
+      _huntMsg = '';
+      _tries = 0;
+      _huntLog.clear();
+    });
+    var ip = await _readIp();
+    if (ip.isNotEmpty && _match(ip, t)) {
+      _onFound(ip);
+      return;
+    }
+    while (_hunting && mounted) {
+      _tries++;
+      _hlog('Essai $_tries : mode avion...');
+      String r = '';
+      try {
+        r = (await _ch.invokeMethod<String>('hunterCycle')) ?? '';
+      } catch (e) {
+        r = 'err';
+      }
+      if (!_hunting || !mounted) break;
+      if (r != 'ok') {
+        _hlog('Impossible de toucher le mode avion (' + r + ')');
+        setState(() {
+          _huntMsg = 'Je ne trouve pas le bouton Mode avion dans le panneau rapide. Mets-le dans la première page du panneau.';
+          _hunting = false;
+        });
+        break;
+      }
+      // attend le retour du réseau mobile (jusqu'à 25 s)
+      ip = '';
+      for (var i = 0; i < 25 && _hunting && mounted; i++) {
+        await Future.delayed(const Duration(seconds: 1));
+        ip = await _readIp();
+        if (ip.isNotEmpty) break;
+      }
+      if (!_hunting || !mounted) break;
+      if (ip.isEmpty) {
+        _hlog('Pas de réseau mobile, je réessaie');
+        continue;
+      }
+      _hlog('IP : $ip');
+      if (_match(ip, t)) {
+        _onFound(ip);
+        return;
+      }
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    if (mounted) setState(() => _hunting = false);
+  }
+
+  void _onFound(String ip) {
+    if (!mounted) return;
+    setState(() {
+      _hunting = false;
+      _found = ip;
+    });
+    HapticFeedback.heavyImpact();
+    _ch.invokeMethod('toFront').catchError((_) {});
+  }
+
   @override
   void dispose() {
+    _hunting = false;
+    _list.dispose();
     _host.dispose();
     super.dispose();
   }
@@ -1110,6 +1249,92 @@ class _IpPageState extends State<IpPage> {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
         children: [
+          sTitle('Chasseur d\'IP (mode avion)'),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: glass(r: 18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Icon(_accOn ? Icons.check_circle : Icons.error_outline, size: 18, color: _accOn ? kGreen : kBad),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(_accOn ? 'Service activé' : 'Service pas encore activé',
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                  if (!_accOn)
+                    TextButton(
+                      onPressed: () async {
+                        try {
+                          await _ch.invokeMethod('hunterSettings');
+                        } catch (_) {}
+                      },
+                      child: const Text('Activer'),
+                    ),
+                  IconButton(onPressed: _refreshAcc, icon: const Icon(Icons.refresh, size: 18)),
+                ]),
+                if (!_accOn)
+                  const Text(
+                    'Dans les réglages qui s\'ouvrent : Applications installées (ou Accessibilité) > CSO Phantom Chasseur IP > Activer. Puis reviens ici.',
+                    style: TextStyle(fontSize: 12, color: kMute, height: 1.4),
+                  ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _list,
+                  minLines: 3,
+                  maxLines: 6,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  enabled: !_hunting,
+                  decoration: InputDecoration(
+                    hintText: 'Liste des IP qui marchent, une par ligne\nex : 10.143\n10.152.',
+                    filled: true,
+                    fillColor: Colors.white.withAlpha(18),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text('IP mobile actuelle : ${_curIp.isEmpty ? '(pas de données mobiles)' : _curIp}',
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _hunting
+                        ? () => setState(() {
+                              _hunting = false;
+                              _huntMsg = 'Recherche arrêtée.';
+                            })
+                        : _startHunt,
+                    child: Text(_hunting ? 'Arrêter (essai $_tries)' : 'Rechercher'),
+                  ),
+                ),
+                if (_found.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text("j'ai chop le $_found 😎😎",
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: kGreen)),
+                  ),
+                if (_huntMsg.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(_huntMsg, style: const TextStyle(color: kBad, fontSize: 12)),
+                  ),
+                if (_huntLog.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(_huntLog.take(8).join('\n'),
+                        style: const TextStyle(fontSize: 11, color: kMute, height: 1.4)),
+                  ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Coupe le Wi-Fi et le VPN avant. L\'appli met le mode avion puis le retire, jusqu\'à ce que l\'IP mobile commence comme une IP de ta liste.',
+                  style: TextStyle(fontSize: 12, color: kMute, height: 1.4),
+                ),
+              ],
+            ),
+          ),
           sTitle('Mon IP publique'),
           Container(
             padding: const EdgeInsets.all(14),
