@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'main.dart';
 import 'server.dart';
@@ -84,6 +85,33 @@ class _ExportPageState extends State<ExportPage> {
       _err = '';
       _hwids.text = cur.isEmpty ? id : '$cur\n$id';
     });
+  }
+
+  void _showQr() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        content: SizedBox(
+          width: 260,
+          height: 260,
+          child: QrImageView(
+            data: _link,
+            version: QrVersions.auto,
+            backgroundColor: Colors.white,
+            errorCorrectionLevel: QrErrorCorrectLevel.L,
+            errorStateBuilder: (c, e) => const Center(
+              child: Text(
+                'Trop de données pour un QR code : exporte un seul serveur.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.black),
+              ),
+            ),
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Fermer'))],
+      ),
+    );
   }
 
   void _export() {
@@ -230,6 +258,13 @@ class _ExportPageState extends State<ExportPage> {
                       child: OutlinedButton(
                         onPressed: () => widget.onSaveFile(_link),
                         child: const Text('Fichier'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _showQr,
+                        child: const Text('QR'),
                       ),
                     ),
                     const SizedBox(width: 8),
