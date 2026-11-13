@@ -67,6 +67,7 @@ if acts:
 import android.app.Activity
 import android.content.Intent
 import android.provider.Settings
+import android.util.Base64
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -74,6 +75,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var pending: MethodChannel.Result? = null
     private var pendingText: String? = null
+    private var pendingBin: Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -91,9 +93,10 @@ class MainActivity : FlutterActivity() {
                     "saveFile" -> {
                         pending = result
                         pendingText = call.argument<String>("text") ?: ""
+                        pendingBin = call.argument<Boolean>("bin") ?: false
                         val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
                         i.addCategory(Intent.CATEGORY_OPENABLE)
-                        i.type = "text/plain"
+                        i.type = if (pendingBin) "application/octet-stream" else "text/plain"
                         i.putExtra(Intent.EXTRA_TITLE, call.argument<String>("name") ?: "cso-phantom.txt")
                         startActivityForResult(i, 7001)
                     }
@@ -202,11 +205,17 @@ class MainActivity : FlutterActivity() {
         }
         try {
             if (requestCode == 7001) {
-                contentResolver.openOutputStream(uri)?.use { it.write((pendingText ?: "").toByteArray()) }
+                val raw = if (pendingBin) Base64.decode(pendingText ?: "", Base64.DEFAULT) else (pendingText ?: "").toByteArray()
+                contentResolver.openOutputStream(uri)?.use { it.write(raw) }
                 r.success(true)
             } else {
-                val txt = contentResolver.openInputStream(uri)?.use { String(it.readBytes()) } ?: ""
-                r.success(txt)
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                if (bytes.size > 5 && bytes[0] == 'C'.code.toByte() && bytes[1] == 'S'.code.toByte() &&
+                    bytes[2] == 'O'.code.toByte() && bytes[3] == 'B'.code.toByte()) {
+                    r.success("b64:" + Base64.encodeToString(bytes, Base64.NO_WRAP))
+                } else {
+                    r.success(String(bytes))
+                }
             }
         } catch (e: Exception) {
             r.error("io", e.message, null)

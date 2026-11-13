@@ -29,7 +29,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.1';
+const kAppVersion = 'V8.3';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -1864,12 +1864,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
-  Future<void> _saveText(String txt) async {
+  Future<void> _saveBin(String txt) async {
     final stamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     try {
       final ok = await _shareCh.invokeMethod<bool>('saveFile', {
-        'name': 'cso-phantom-$stamp.txt',
-        'text': txt,
+        'name': 'cso-phantom-$stamp.cso',
+        'text': base64.encode(encodeBin(txt)),
+        'bin': true,
       });
       _toast(ok == true ? 'Fichier enregistré' : 'Enregistrement annulé');
     } catch (e) {
@@ -1889,6 +1890,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     try {
       final t = await _shareCh.invokeMethod<String>('openFile');
       if (t == null || t.trim().isEmpty) return;
+      if (t.startsWith('b64:')) {
+        final d = decodeBin(base64.decode(t.substring(4)));
+        if (d == null) {
+          _toast('Fichier .bin illisible ou abîmé');
+          return;
+        }
+        _doImport(d);
+        return;
+      }
       _doImport(t);
     } catch (e) {
       _toast('Impossible de lire le fichier : $e');
@@ -1909,7 +1919,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         list: list,
         onCopy: (t) => _copy(t),
         onShare: (t) => _share(t),
-        onSaveFile: (t) => _saveText(t),
+        onSaveFile: (t) => _saveBin(t),
       ),
     ));
   }

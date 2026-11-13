@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io' show ZLibCodec;
+import 'dart:typed_data';
 
 String newId() => DateTime.now().microsecondsSinceEpoch.toRadixString(36);
 
@@ -479,6 +481,35 @@ List<Server>? parseBundle(String raw) {
       out.add(s);
     }
     return out;
+  } catch (_) {
+    return null;
+  }
+}
+
+
+// ======================= FICHIER BINAIRE (.bin) =======================
+
+const _binKey = [0x43, 0x53, 0x4F, 0x2D, 0x50, 0x48, 0x41, 0x4E, 0x54, 0x4F, 0x4D, 0x21];
+
+List<int> _xorKey(List<int> d) {
+  final o = List<int>.filled(d.length, 0);
+  for (var i = 0; i < d.length; i++) {
+    o[i] = d[i] ^ _binKey[i % _binKey.length] ^ (i & 0xFF);
+  }
+  return o;
+}
+
+/// Texte (liens ou lien csophantom://) -> octets d'un fichier .bin : « CSOB » + version + contenu compressé et brouillé.
+Uint8List encodeBin(String text) {
+  final z = ZLibCodec(level: 9).encode(utf8.encode(text));
+  return Uint8List.fromList([0x43, 0x53, 0x4F, 0x42, 1, ..._xorKey(z)]);
+}
+
+/// Octets d'un fichier .bin -> texte, ou null si le fichier n'est pas valide.
+String? decodeBin(List<int> b) {
+  if (b.length < 6 || b[0] != 0x43 || b[1] != 0x53 || b[2] != 0x4F || b[3] != 0x42) return null;
+  try {
+    return utf8.decode(ZLibCodec().decode(_xorKey(b.sublist(5))));
   } catch (_) {
     return null;
   }
