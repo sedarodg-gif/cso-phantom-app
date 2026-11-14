@@ -29,7 +29,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.3';
+const kAppVersion = 'V8.4';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -789,6 +789,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   // trafic
   double _dlBps = 0; // vitesse annoncée par le plugin (octets/s)
   double _ulBps = 0;
+  bool _warned80 = false;
   double _dlTotal = 0; // total de la session (octets)
   double _ulTotal = 0;
   double? _prevDl;
@@ -1310,6 +1311,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         _toggle();
         return;
       }
+      if (cap > 0 && !_warned80 && (_dlTotal + _ulTotal) >= cap * 1048576.0 * 0.8) {
+        _warned80 = true;
+        HapticFeedback.heavyImpact();
+        _toast('Attention : 80 pour cent de ta limite de données utilisée');
+      }
       if (cap > 0 && (_dlTotal + _ulTotal) >= cap * 1048576.0) {
         _toast('Limite de données atteinte : VPN coupé');
         _toggle();
@@ -1334,6 +1340,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _ulBps = 0;
     _dlTotal = 0;
     _ulTotal = 0;
+    _warned80 = false;
     _dlShown = 0;
     _ulShown = 0;
     _prevDl = null;

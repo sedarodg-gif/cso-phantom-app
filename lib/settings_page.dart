@@ -1051,6 +1051,8 @@ class _IpPageState extends State<IpPage> {
   final _pauseS = TextEditingController(text: '2');
   bool _connectOnFound = false;
   List<String> _history = [];
+  Map<String, String> _lists = {'Liste 1': ''};
+  String _curList = 'Liste 1';
 
   @override
   void initState() {
@@ -1061,7 +1063,18 @@ class _IpPageState extends State<IpPage> {
   Future<void> _initHunter() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      _list.text = sp.getString('hunter_list') ?? '';
+      final raw = sp.getString('hunter_lists');
+      if (raw != null) {
+        final m = jsonDecode(raw);
+        if (m is Map && m.isNotEmpty) {
+          _lists = m.map((k, v) => MapEntry(k.toString(), v.toString()));
+        }
+      } else {
+        _lists = {'Liste 1': sp.getString('hunter_list') ?? ''};
+      }
+      _curList = sp.getString('hunter_cur') ?? _lists.keys.first;
+      if (!_lists.containsKey(_curList)) _curList = _lists.keys.first;
+      _list.text = _lists[_curList] ?? '';
       _maxTries.text = sp.getString('hunter_max') ?? '0';
       _pauseS.text = sp.getString('hunter_pause') ?? '2';
       _connectOnFound = sp.getBool('hunter_connect') ?? false;
@@ -1126,7 +1139,7 @@ class _IpPageState extends State<IpPage> {
     }
     try {
       final sp = await SharedPreferences.getInstance();
-      await sp.setString('hunter_list', _list.text);
+      await _saveLists(sp);
       await sp.setString('hunter_max', _maxTries.text);
       await sp.setString('hunter_pause', _pauseS.text);
       await sp.setBool('hunter_connect', _connectOnFound);
@@ -1193,6 +1206,60 @@ class _IpPageState extends State<IpPage> {
     if (mounted) setState(() => _hunting = false);
   }
 
+  Future<void> _saveLists([SharedPreferences? sp0]) async {
+    _lists[_curList] = _list.text;
+    try {
+      final sp = sp0 ?? await SharedPreferences.getInstance();
+      await sp.setString('hunter_lists', jsonEncode(_lists));
+      await sp.setString('hunter_cur', _curList);
+    } catch (_) {}
+  }
+
+  Future<void> _switchList(String name) async {
+    await _saveLists();
+    setState(() {
+      _curList = name;
+      _list.text = _lists[name] ?? '';
+    });
+    await _saveLists();
+  }
+
+  Future<void> _newList() async {
+    final c = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Nouvelle liste'),
+        content: TextField(controller: c, autofocus: true, decoration: const InputDecoration(hintText: 'ex : Orange')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('Créer')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || _lists.containsKey(name)) return;
+    await _saveLists();
+    setState(() {
+      _lists[name] = '';
+      _curList = name;
+      _list.text = '';
+    });
+    await _saveLists();
+  }
+
+  Future<void> _delList() async {
+    if (_lists.length <= 1) {
+      setState(() => _huntMsg = 'Garde au moins une liste.');
+      return;
+    }
+    setState(() {
+      _lists.remove(_curList);
+      _curList = _lists.keys.first;
+      _list.text = _lists[_curList] ?? '';
+    });
+    await _saveLists();
+  }
+
   Future<void> _addHist(String ip) async {
     final t = DateTime.now();
     final hh = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
@@ -1212,6 +1279,13 @@ class _IpPageState extends State<IpPage> {
       _found = ip;
     });
     HapticFeedback.heavyImpact();
+    () async {
+      for (var i = 0; i < 4; i++) {
+        SystemSound.play(SystemSoundType.alert);
+        HapticFeedback.vibrate();
+        await Future.delayed(const Duration(milliseconds: 700));
+      }
+    }();
     _ch.invokeMethod('toFront').catchError((_) {});
     if (_connectOnFound) {
       Future.delayed(const Duration(seconds: 2), () {
@@ -1321,6 +1395,19 @@ class _IpPageState extends State<IpPage> {
                     style: TextStyle(fontSize: 12, color: kMute, height: 1.4),
                   ),
                 const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: _curList,
+                      items: [for (final k in _lists.keys) DropdownMenuItem(value: k, child: Text(k))],
+                      onChanged: _hunting ? null : (v) => v == null ? null : _switchList(v),
+                    ),
+                  ),
+                  IconButton(onPressed: _hunting ? null : _newList, icon: const Icon(Icons.add), tooltip: 'Nouvelle liste'),
+                  IconButton(onPressed: _hunting ? null : _delList, icon: const Icon(Icons.delete_outline), tooltip: 'Supprimer cette liste'),
+                ]),
+                const SizedBox(height: 4),
                 TextField(
                   controller: _list,
                   minLines: 3,
