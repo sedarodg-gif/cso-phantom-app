@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'main.dart';
 import 'server.dart';
@@ -130,6 +131,33 @@ class _ExportPageState extends State<ExportPage> {
     );
   }
 
+  void _showQr() {
+    if (_link.length > 2300) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Trop de serveurs pour un seul QR code. Exporte moins de serveurs, ou utilise Fichier.')),
+      );
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        content: SizedBox(
+          width: 280,
+          height: 280,
+          child: QrImageView(
+            data: _link,
+            version: QrVersions.auto,
+            size: 280,
+            backgroundColor: Colors.white,
+            errorCorrectionLevel: QrErrorCorrectLevel.L,
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Fermer'))],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasSsh = widget.list.any((s) => s.type == 'ssh');
@@ -230,6 +258,13 @@ class _ExportPageState extends State<ExportPage> {
                       child: OutlinedButton(
                         onPressed: () => widget.onSaveFile(_link),
                         child: const Text('Fichier'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _showQr,
+                        child: const Text('QR'),
                       ),
                     ),
                     const SizedBox(width: 8),

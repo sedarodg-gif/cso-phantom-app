@@ -29,7 +29,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.4';
+const kAppVersion = 'V8.5';
 
 const kTypeNames = {
   'vless': 'VLESS',
