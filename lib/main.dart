@@ -30,7 +30,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.6';
+const kAppVersion = 'V8.7';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -156,6 +156,158 @@ void _applySsStream(Map o, Server s) {
     };
   }
   o['streamSettings'] = stream;
+}
+
+/// Reconstruit entièrement la sortie VMess / VLESS / Trojan à partir des champs du serveur
+/// (au lieu de se fier à l'analyse du lien par le plugin). Garde le reste de la config du plugin
+/// (TUN, DNS, routage) qui, lui, fonctionne.
+String rebuildOutbound(String cfg, Server s) {
+  try {
+    if (s.type != 'vmess' && s.type != 'vless' && s.type != 'trojan') return cfg;
+    final m = jsonDecode(cfg);
+    if (m is! Map) return cfg;
+    final outs = m['outbounds'];
+    if (outs is! List) return cfg;
+    final idx = outs.indexWhere((o) => o is Map && (o['protocol'] == 'vmess' || o['protocol'] == 'vless' || o['protocol'] == 'trojan'));
+    if (idx < 0) return cfg;
+    final o = Map<String, dynamic>.from(outs[idx] as Map);
+    final ex = s.extra;
+    String e(String k) => (ex[k] ?? '').toString();
+    final hostH = s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '';
+    final addrIsIp = RegExp(r'^[0-9.]+$').hasMatch(s.host) || s.host.contains(':');
+    var sn = s.sni.isNotEmpty ? s.sni : (hostH.isNotEmpty ? hostH : (addrIsIp ? '' : s.host));
+    final net = s.net.isEmpty ? 'tcp' : s.net;
+    final sec = s.type == 'trojan' ? (s.sec == 'none' ? 'none' : (s.sec == 'reality' ? 'reality' : 'tls')) : s.sec;
+
+    final st = <String, dynamic>{'network': net};
+    switch (net) {
+      case 'ws':
+        st['wsSettings'] = {
+          'path': s.path.isEmpty ? '/' : s.path,
+          'headers': hostH.isNotEmpty ? {'Host': hostH} : <String, dynamic>{},
+        };
+        break;
+      case 'grpc':
+        st['grpcSettings'] = {'serviceName': s.path, 'multiMode': e('mode') == 'multi'};
+        break;
+      case 'httpupgrade':
+        st['httpupgradeSettings'] = {'path': s.path.isEmpty ? '/' : s.path, 'host': hostH};
+        break;
+      case 'xhttp':
+        st['xhttpSettings'] = {
+          'path': s.path.isEmpty ? '/' : s.path,
+          'host': hostH,
+          if (e('mode').isNotEmpty) 'mode': e('mode'),
+        };
+        break;
+      case 'h2':
+        st['network'] = 'h2';
+        st['httpSettings'] = {
+          'path': s.path.isEmpty ? '/' : s.path,
+          'host': hostH.isNotEmpty ? [hostH] : <String>[],
+        };
+        break;
+      case 'kcp':
+        st['kcpSettings'] = {
+          'header': {'type': e('headerType').isEmpty ? 'none' : e('headerType')},
+          if (e('seed').isNotEmpty) 'seed': e('seed'),
+        };
+        break;
+      default:
+        if (e('headerType') == 'http') {
+          st['tcpSettings'] = {
+            'header': {
+              'type': 'http',
+              'request': {
+                'path': [s.path.isEmpty ? '/' : s.path],
+                'headers': hostH.isNotEmpty ? {'Host': [hostH]} : <String, dynamic>{},
+              },
+            },
+          };
+        }
+    }
+    final fp = e('fp').isNotEmpty ? e('fp') : e('fingerprint');
+    if (sec == 'tls') {
+      st['security'] = 'tls';
+      final tls = <String, dynamic>{'serverName': sn, 'allowInsecure': s.insecure};
+      if (fp.isNotEmpty) tls['fingerprint'] = fp;
+      final al = e('alpn');
+      if (al.isNotEmpty) {
+        tls['alpn'] = al.split(',').map((x) => x.trim()).where((x) => x.isNotEmpty).toList();
+      } else if (net == 'ws' || net == 'httpupgrade') {
+        tls['alpn'] = ['http/1.1'];
+      }
+      st['tlsSettings'] = tls;
+    } else if (sec == 'reality') {
+      st['security'] = 'reality';
+      st['realitySettings'] = {
+        'serverName': sn,
+        'fingerprint': fp.isEmpty ? 'chrome' : fp,
+        'publicKey': e('pbk'),
+        'shortId': e('sid'),
+        'spiderX': e('spx'),
+      };
+    } else {
+      st['security'] = 'none';
+    }
+    final old = o['streamSettings'];
+    if (old is Map && old['sockopt'] is Map) st['sockopt'] = old['sockopt'];
+    o['streamSettings'] = st;
+
+    if (s.type == 'vmess') {
+      o['settings'] = {
+        'vnext': [
+          {
+            'address': s.host,
+            'port': s.port,
+            'users': [
+              {
+                'id': s.uuid,
+                'alterId': int.tryParse(e('aid')) ?? 0,
+                'security': e('scy').isEmpty ? 'auto' : e('scy'),
+                'level': 0,
+              },
+            ],
+          },
+        ],
+      };
+    } else if (s.type == 'vless') {
+      o['settings'] = {
+        'vnext': [
+          {
+            'address': s.host,
+            'port': s.port,
+            'users': [
+              {
+                'id': s.uuid,
+                'encryption': 'none',
+                if (e('flow').isNotEmpty) 'flow': e('flow'),
+                'level': 0,
+              },
+            ],
+          },
+        ],
+      };
+    } else {
+      o['settings'] = {
+        'servers': [
+          {'address': s.host, 'port': s.port, 'password': s.pass, 'level': 0},
+        ],
+      };
+    }
+    outs[idx] = o;
+    return jsonEncode(m);
+  } catch (_) {
+    return cfg;
+  }
+}
+
+/// Résumé lisible (sans secret) de la sortie réseau, pour le Journal.
+String outboundSummary(Server s) {
+  final hostH = s.hosth.isNotEmpty ? s.hosth.split(',').first.trim() : '';
+  final sn = s.sni.isNotEmpty ? s.sni : hostH;
+  return '${s.type} ${s.host}:${s.port} net=${s.net} sec=${s.sec} sni=${sn.isEmpty ? "-" : sn} '
+      'host=${hostH.isEmpty ? "-" : hostH} path=${s.path.isEmpty ? "-" : s.path} insecure=${s.insecure}';
 }
 
 /// Ajuste la configuration Xray générée : TLS (allowInsecure, SNI), mux, DNS IPv4.
@@ -1067,11 +1219,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   ({String remark, String config}) _build(Server s) {
     final parsed = FlutterVless.parse(toLink(s, core: true));
+    final base = rebuildOutbound(parsed.getFullConfiguration(), s);
     return (
       remark: parsed.remark,
-      config: (_st.compat || s.extra['raw'] == '1')
-          ? parsed.getFullConfiguration()
-          : tuneConfig(parsed.getFullConfiguration(), s, _st),
+      config: (_st.compat || s.extra['raw'] == '1') ? base : tuneConfig(base, s, _st),
     );
   }
 
@@ -1526,6 +1677,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     });
     try {
       final b = _build(s);
+      _log('Sortie : ${outboundSummary(s)}');
       await _ensureInit();
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -3104,6 +3256,8 @@ class _ServerFormState extends State<ServerForm> {
   late bool mux;
   late bool sshTls;
   late String mode;
+  late String xmode;
+  bool adv = false;
   final name = TextEditingController();
   final host = TextEditingController();
   final port = TextEditingController();
@@ -3142,6 +3296,53 @@ class _ServerFormState extends State<ServerForm> {
     group.text = s?.group ?? '';
     proxy.text = s?.proxy ?? '';
     mode = _detectMode();
+    xmode = _detectX();
+    adv = false;
+  }
+
+  static const _xmodesAll = {
+    'ws_tls': 'WebSocket SSL/TLS',
+    'ws': 'WebSocket (sans TLS)',
+    'tcp_tls': 'TCP SSL/TLS',
+    'tcp': 'TCP (sans TLS)',
+    'grpc_tls': 'gRPC SSL/TLS',
+    'httpupgrade_tls': 'HTTPUpgrade SSL/TLS',
+    'xhttp_tls': 'XHTTP SSL/TLS',
+    'h2_tls': 'HTTP/2 SSL/TLS',
+    'kcp': 'mKCP',
+    'tcp_reality': 'Reality (VLESS)',
+  };
+
+  Map<String, String> _xmodesFor() {
+    if (type == 'trojan') {
+      return {for (final k in ['tcp_tls', 'ws_tls', 'grpc_tls', 'httpupgrade_tls', 'xhttp_tls', 'h2_tls', 'ws', 'tcp']) k: _xmodesAll[k]!};
+    }
+    if (type == 'vless') return _xmodesAll;
+    return {for (final e in _xmodesAll.entries) if (e.key != 'tcp_reality') e.key: e.value};
+  }
+
+  String _detectX() {
+    final tls = sec == 'tls' || type == 'trojan' && sec != 'none';
+    if (sec == 'reality') return 'tcp_reality';
+    if (net == 'kcp') return 'kcp';
+    return '${net}${tls ? '_tls' : ''}';
+  }
+
+  void _applyX(String m) {
+    xmode = m;
+    if (m == 'tcp_reality') {
+      net = 'tcp';
+      sec = 'reality';
+      return;
+    }
+    if (m == 'kcp') {
+      net = 'kcp';
+      sec = 'none';
+      return;
+    }
+    final tls = m.endsWith('_tls');
+    net = tls ? m.substring(0, m.length - 4) : m;
+    sec = tls ? 'tls' : 'none';
   }
 
   String _detectMode() {
@@ -3174,6 +3375,8 @@ class _ServerFormState extends State<ServerForm> {
     super.dispose();
   }
 
+  bool get _isX => type == 'vmess' || type == 'vless' || type == 'trojan';
+
   bool v(String f) => _show[type]!.contains(f);
 
   /// Champ réellement affiché (tient compte du mode SSH et de la sécurité).
@@ -3185,6 +3388,13 @@ class _ServerFormState extends State<ServerForm> {
       if (f == 'payload') return mode.contains('payload');
       if (f == 'hosth') return sshTls || mode.contains('payload');
       if (f == 'sshtls') return false;
+    }
+    if (_isX) {
+      if (!adv && (f == 'net' || f == 'sec' || f == 'mux')) return false;
+      if (f == 'path') return net != 'tcp' || adv;
+      if (f == 'hosth') return net != 'tcp' || adv;
+      if (f == 'sni') return sec != 'none';
+      if (f == 'insec') return (sec != 'none' || type == 'trojan') && (adv || sec == 'tls');
     }
     if (f == 'insec') return type == 'trojan' || sec != 'none';
     return true;
@@ -3370,6 +3580,8 @@ class _ServerFormState extends State<ServerForm> {
                 }
                 type = x;
                 if (x == 'ssh') mode = _detectMode();
+                if (x == 'trojan' && sec == 'none' && net == 'tcp') sec = 'tls';
+                if (x == 'vless' || x == 'vmess' || x == 'trojan') xmode = _detectX();
               });
             }),
             Row(children: [
@@ -3401,7 +3613,9 @@ class _ServerFormState extends State<ServerForm> {
                       _applyMode(x);
                     }
                   })),
-            if (v('net'))
+            if (_isX)
+              _drop('Mode', _xmodesFor().containsKey(xmode) ? xmode : _xmodesFor().keys.first, _xmodesFor(), (x) => setState(() => _applyX(x))),
+            if (vis('net'))
               _drop('Transport', net, const {
                 'tcp': 'TCP',
                 'ws': 'WebSocket',
@@ -3411,11 +3625,11 @@ class _ServerFormState extends State<ServerForm> {
                 'h2': 'HTTP/2',
                 'kcp': 'mKCP',
               }, (x) => setState(() => net = x)),
-            if (v('path')) _field('Chemin (path) / service gRPC', path, hint: '/'),
+            if (vis('path') || (!_isX && v('path'))) _field(net == 'grpc' ? 'Service gRPC' : 'Chemin (path)', path, hint: '/'),
             if (vis('hosth'))
               _field(type == 'ssh' ? 'Host ([host] du payload)' : 'Host (en-tête)', hosth,
                   hint: 'cdn.exemple.com'),
-            if (v('sec'))
+            if (vis('sec') && type != 'trojan')
               _drop('Sécurité', sec, const {'tls': 'TLS', 'none': 'Aucune', 'reality': 'Reality'},
                   (x) => setState(() => sec = x)),
             if (vis('sshtls'))
@@ -3448,7 +3662,7 @@ class _ServerFormState extends State<ServerForm> {
               ),
             if (vis('proxy'))
               _field('Proxy (hôte:port)', proxy, hint: 'ex. 10.0.0.1:8080'),
-            if (v('mux'))
+            if (vis('mux'))
               _switch('Mux', "Accélère l'ouverture des pages sur certains serveurs. Désactive-le si la connexion échoue.",
                   mux, (x) => setState(() => mux = x)),
             if (vis('insec'))
@@ -3458,6 +3672,11 @@ class _ServerFormState extends State<ServerForm> {
                       'Souvent nécessaire avec un SNI ou un Host personnalisé.',
                   insecure,
                   (x) => setState(() => insecure = x)),
+            if (_isX)
+              _switch('Réglages avancés', 'Transport, sécurité, mux et autres options à la main', adv, (x) => setState(() {
+                    adv = x;
+                    xmode = _detectX();
+                  })),
             if (err.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
