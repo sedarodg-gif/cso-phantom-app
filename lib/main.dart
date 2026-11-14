@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'server.dart';
 import 'diag_page.dart';
+import 'ads.dart';
 import 'export_page.dart';
 import 'qr_scan_page.dart';
 import 'haunted_bg.dart';
@@ -29,7 +30,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.5';
+const kAppVersion = 'V8.6';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -43,6 +44,12 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
   runApp(const CsoApp());
+  // annonces : demarrage differe, apres l'ouverture de l'ecran, sans jamais bloquer l'appli
+  Future<void>.delayed(const Duration(seconds: 4), () {
+    try {
+      Ads.init();
+    } catch (_) {}
+  });
 }
 
 class CsoApp extends StatelessWidget {
@@ -1468,6 +1475,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       } catch (_) {}
       setState(_setOff);
       _toast('Déconnecté');
+      try {
+        Ads.maybeShowInterstitial();
+      } catch (_) {}
       return;
     }
     _userStop = false;
@@ -1994,11 +2004,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           // l'accueil tient sur l'écran sans défilement : l'orbe prend la place restante
                           ? Padding(
                               padding: const EdgeInsets.fromLTRB(18, 6, 18, 96),
-                              child: _page(),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [Expanded(child: _page()), const AdBanner()],
+                              ),
                             )
                           : SingleChildScrollView(
                               padding: const EdgeInsets.fromLTRB(18, 10, 18, 110),
-                              child: _page(),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [_page(), const AdBanner()],
+                              ),
                             ),
                     ),
                   ],

@@ -14,6 +14,7 @@ dependencies:
   dartssh2: ^4.1.0
   mobile_scanner: 5.2.3
   qr_flutter: 4.1.0
+  google_mobile_ads: 9.2.0
 
 dependency_overrides:
   flutter_vless_android: 1.1.5
