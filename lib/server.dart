@@ -320,6 +320,12 @@ Server? parseLink(String raw) {
         payload: pl,
         proxy: q['proxy'] ?? '',
         insecure: q['insecure'] == null ? true : _insecureOf(q['insecure']),
+        extra: {
+          if ((q['udpgw'] ?? '').isNotEmpty) 'udpgw': q['udpgw']!,
+          if (q['dnstt'] == '1') 'mode': 'dnstt',
+          if ((q['dtkey'] ?? '').isNotEmpty) 'dtkey': q['dtkey']!,
+          if ((q['dtdns'] ?? '').isNotEmpty) 'dtdns': q['dtdns']!,
+        },
       );
     }
 
@@ -431,6 +437,12 @@ String toLink(Server s, {bool core = false}) {
   if (s.payload.isNotEmpty) q['payload'] = base64Url.encode(utf8.encode(s.payload));
   if (s.proxy.isNotEmpty) q['proxy'] = s.proxy;
   if (s.sec == 'tls') q['insecure'] = s.insecure ? '1' : '0';
+  if ((s.extra['udpgw'] ?? '').isNotEmpty) q['udpgw'] = s.extra['udpgw']!;
+  if (s.extra['mode'] == 'dnstt') {
+    q['dnstt'] = '1';
+    q['dtkey'] = s.extra['dtkey'] ?? '';
+    q['dtdns'] = s.extra['dtdns'] ?? '';
+  }
   final qs = q.isEmpty
       ? ''
       : '?${q.entries.map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}').join('&')}';

@@ -107,6 +107,7 @@ Future<void> _run(List<dynamic> args) async {
   SSHClient? client;
   ServerSocket? server;
   Timer? timer;
+  _UdpGw? gwRef;
   var closing = false;
   final st = _Stats();
 
@@ -114,6 +115,7 @@ Future<void> _run(List<dynamic> args) async {
     if (closing) return;
     closing = true;
     timer?.cancel();
+    gwRef?.close();
     try {
       await server?.close();
     } catch (_) {}
@@ -197,10 +199,13 @@ Future<void> _run(List<dynamic> args) async {
     client = c;
     await c.authenticated.timeout(const Duration(seconds: 30));
 
+    final gwPort = (cfg['udpgw'] as num?)?.toInt() ?? 0;
+    final gw = gwPort > 0 ? _UdpGw(c, gwPort, st) : null;
+    gwRef = gw;
     final srv = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     server = srv;
     srv.listen((Socket s) {
-      _socks(s, c, st).catchError((Object _) {});
+      _socks(s, c, st, gw).catchError((Object _) {});
     });
 
     c.done.then((_) {
@@ -413,13 +418,14 @@ class _Tunnel implements SSHSocket {
 // ----------------------------------------------------------------------
 //  Proxy SOCKS5 local (CONNECT uniquement) -> canal SSH direct-tcpip
 // ----------------------------------------------------------------------
-Future<void> _socks(Socket sock, SSHClient client, _Stats st) async {
+Future<void> _socks(Socket sock, SSHClient client, _Stats st, _UdpGw? gw) async {
   try {
     sock.setOption(SocketOption.tcpNoDelay, true);
   } catch (_) {}
   final buf = <int>[];
   var stage = 0;
   SSHForwardChannel? ch;
+  _UdpAssoc? assoc;
   StreamSubscription<Uint8List>? sub;
 
   void reply(int code) {
@@ -431,6 +437,7 @@ Future<void> _socks(Socket sock, SSHClient client, _Stats st) async {
   sub = sock.listen(
     (Uint8List data) async {
       try {
+        if (stage == 4) return; // canal de contrôle d'une association UDP
         if (stage == 2) {
           st.up += data.length;
           ch?.sink.add(data);
@@ -473,8 +480,29 @@ Future<void> _socks(Socket sock, SSHClient client, _Stats st) async {
           }
           final port = (buf[need - 2] << 8) | buf[need - 1];
           buf.removeRange(0, need);
+          if (cmd == 3) {
+            // UDP ASSOCIATE : passe par UDPGW si le serveur l'offre
+            if (gw == null) {
+              reply(7);
+              sock.destroy();
+              return;
+            }
+            stage = 4;
+            sub?.pause();
+            final okGw = await gw.ensure();
+            if (!okGw) {
+              reply(1);
+              sock.destroy();
+              return;
+            }
+            final u = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+            assoc = gw.newAssoc(u);
+            sock.add(<int>[5, 0, 0, 1, 127, 0, 0, 1, (u.port >> 8) & 0xff, u.port & 0xff]);
+            sub?.resume();
+            return;
+          }
           if (cmd != 1) {
-            reply(7); // seule la commande CONNECT est prise en charge
+            reply(7); // commande non prise en charge
             sock.destroy();
             return;
           }
@@ -524,15 +552,183 @@ Future<void> _socks(Socket sock, SSHClient client, _Stats st) async {
       }
     },
     onDone: () {
+      assoc?.close();
       try {
         ch?.sink.close();
       } catch (_) {}
     },
     onError: (Object e) {
+      assoc?.close();
       try {
         ch?.destroy();
       } catch (_) {}
     },
     cancelOnError: true,
   );
+}
+
+// ----------------------------------------------------------------------
+//  UDPGW (badvpn-udpgw, port 7300 du serveur) : UDP à travers le tunnel SSH
+//  Trame : [longueur 2 octets LE][flags 1][conid 2 octets LE][IPv4 4][port 2 BE][données]
+//  flags : 1 = keepalive, 2 = rebind, 4 = DNS, 8 = IPv6
+// ----------------------------------------------------------------------
+class _UdpGw {
+  final SSHClient client;
+  final int port;
+  final _Stats st;
+  SSHForwardChannel? _ch;
+  Future<bool>? _opening;
+  Timer? _ka;
+  final List<int> _rx = <int>[];
+  final Map<int, _UdpAssoc> _byCon = <int, _UdpAssoc>{};
+  int _nextCon = 1;
+
+  _UdpGw(this.client, this.port, this.st);
+
+  Future<bool> ensure() {
+    if (_ch != null) return Future<bool>.value(true);
+    return _opening ??= _open().whenComplete(() => _opening = null);
+  }
+
+  Future<bool> _open() async {
+    try {
+      final f = await client.forwardLocal('127.0.0.1', port).timeout(const Duration(seconds: 8));
+      _ch = f;
+      f.stream.listen(
+        _onData,
+        onDone: _reset,
+        onError: (Object _) => _reset(),
+        cancelOnError: true,
+      );
+      _ka?.cancel();
+      _ka = Timer.periodic(const Duration(seconds: 15), (_) => _sendRaw(<int>[1, 0, 0]));
+      return true;
+    } catch (_) {
+      _ch = null;
+      return false;
+    }
+  }
+
+  void _reset() {
+    _ch = null;
+    _ka?.cancel();
+    _rx.clear();
+  }
+
+  void close() {
+    _ka?.cancel();
+    for (final a in _byCon.values.toList()) {
+      a.close();
+    }
+    _byCon.clear();
+    try {
+      _ch?.destroy();
+    } catch (_) {}
+    _ch = null;
+  }
+
+  _UdpAssoc newAssoc(RawDatagramSocket u) => _UdpAssoc(this, u);
+
+  int newCon(_UdpAssoc a) {
+    var c = _nextCon;
+    _nextCon = (_nextCon + 1) & 0xFFFF;
+    if (_nextCon == 0) _nextCon = 1;
+    if (c == 0) c = 1;
+    _byCon[c] = a;
+    return c;
+  }
+
+  void drop(_UdpAssoc a) {
+    _byCon.removeWhere((_, v) => identical(v, a));
+  }
+
+  void _sendRaw(List<int> body) {
+    final f = _ch;
+    if (f == null) return;
+    try {
+      final len = body.length;
+      f.sink.add(Uint8List.fromList(<int>[len & 0xff, (len >> 8) & 0xff, ...body]));
+    } catch (_) {}
+  }
+
+  void sendDatagram(int con, List<int> ip4, int dport, List<int> payload) {
+    if (payload.length > 65000) return;
+    st.up += payload.length;
+    _sendRaw(<int>[0, con & 0xff, (con >> 8) & 0xff, ...ip4, (dport >> 8) & 0xff, dport & 0xff, ...payload]);
+  }
+
+  void _onData(Uint8List d) {
+    _rx.addAll(d);
+    while (_rx.length >= 2) {
+      final len = _rx[0] | (_rx[1] << 8);
+      if (_rx.length < 2 + len) break;
+      final fr = _rx.sublist(2, 2 + len);
+      _rx.removeRange(0, 2 + len);
+      if (fr.length < 3) continue;
+      final flags = fr[0];
+      if ((flags & 1) != 0) continue; // keepalive
+      final con = fr[1] | (fr[2] << 8);
+      final isV6 = (flags & 8) != 0;
+      final hl = 3 + (isV6 ? 18 : 6);
+      if (fr.length < hl) continue;
+      if (isV6) continue; // IPv6 non géré
+      final ip = fr.sublist(3, 7);
+      final p = (fr[7] << 8) | fr[8];
+      final data = fr.sublist(hl);
+      st.down += data.length;
+      _byCon[con]?.deliver(ip, p, data);
+    }
+  }
+}
+
+class _UdpAssoc {
+  final _UdpGw gw;
+  final RawDatagramSocket sock;
+  InternetAddress? _cAddr;
+  int _cPort = 0;
+  final Map<String, int> _con = <String, int>{};
+  bool _closed = false;
+
+  _UdpAssoc(this.gw, this.sock) {
+    sock.listen((RawSocketEvent e) {
+      if (e != RawSocketEvent.read) return;
+      Datagram? d = sock.receive();
+      while (d != null) {
+        _fromClient(d);
+        d = sock.receive();
+      }
+    });
+  }
+
+  void _fromClient(Datagram d) {
+    _cAddr = d.address;
+    _cPort = d.port;
+    final b = d.data;
+    if (b.length < 10 || b[2] != 0 || b[3] != 1) return; // pas de fragments, IPv4 seulement
+    final ip = b.sublist(4, 8);
+    final p = (b[8] << 8) | b[9];
+    final key = '${ip.join('.')}:$p';
+    var c = _con[key];
+    if (c == null) {
+      c = gw.newCon(this);
+      _con[key] = c;
+    }
+    gw.sendDatagram(c, ip, p, b.sublist(10));
+  }
+
+  void deliver(List<int> ip, int port, List<int> data) {
+    if (_closed || _cAddr == null) return;
+    try {
+      sock.send(<int>[0, 0, 0, 1, ...ip, (port >> 8) & 0xff, port & 0xff, ...data], _cAddr!, _cPort);
+    } catch (_) {}
+  }
+
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    gw.drop(this);
+    try {
+      sock.close();
+    } catch (_) {}
+  }
 }

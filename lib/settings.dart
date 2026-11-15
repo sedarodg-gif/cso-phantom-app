@@ -72,6 +72,7 @@ class AppSettings {
   bool blockQuic = true;
   bool lan = false;
   bool autoReconnect = true;
+  bool autoConnect = false; // connecte tout seul à l'ouverture de l'appli
   bool compat = false; // mode compatibilité : configuration d'origine, sans mes optimisations
   bool bgAnim = true; // fond animé (manoir hanté)
   bool haptics = true; // vibration légère au toucher de la boule
@@ -116,6 +117,7 @@ class AppSettings {
     blockQuic = d.blockQuic;
     lan = d.lan;
     autoReconnect = d.autoReconnect;
+    autoConnect = d.autoConnect;
     autoSwitch = d.autoSwitch;
     haptics = d.haptics;
     bgAnim = d.bgAnim;
@@ -150,6 +152,7 @@ class AppSettings {
         'blockQuic': blockQuic,
         'lan': lan,
         'autoReconnect': autoReconnect,
+        'autoConnect': autoConnect,
         'autoSwitch': autoSwitch,
         'haptics': haptics,
         'bgAnim': bgAnim,
@@ -187,6 +190,7 @@ class AppSettings {
     s.blockQuic = b('blockQuic', true);
     s.lan = b('lan', false);
     s.autoReconnect = b('autoReconnect', true);
+    s.autoConnect = b('autoConnect', false);
     s.autoSwitch = b('autoSwitch', true);
     s.haptics = b('haptics', true);
     s.bgAnim = b('bgAnim', true);

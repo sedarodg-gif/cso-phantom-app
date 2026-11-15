@@ -756,6 +756,20 @@ class _BehaviorPageState extends State<BehaviorPage> {
           sSwitch('Reconnexion automatique', 'Relance le VPN si la connexion tombe sans que tu l\'aies coupée',
               st.autoReconnect, (v) => _set(() => st.autoReconnect = v),
               icon: Icons.sync),
+          sSwitch('Connexion automatique', "Connecte le VPN dès que tu ouvres l'appli, avec le dernier serveur choisi",
+              st.autoConnect, (v) => _set(() => st.autoConnect = v),
+              icon: Icons.bolt),
+          sTile(
+            icon: Icons.battery_charging_full,
+            title: 'Garder le VPN en vie',
+            sub: "Demande à Android de ne pas tuer l'appli en arrière-plan (évite les coupures quand l'écran est éteint).",
+            trailing: _chev(),
+            onTap: () async {
+              try {
+                await _ch.invokeMethod<bool>('batteryOpt');
+              } catch (_) {}
+            },
+          ),
           sSwitch('Mode compatibilité',
               "Utilise la configuration d'origine du serveur, sans mes optimisations (mode rapide, DNS, blocage QUIC, tampon). À essayer si rien ne passe.",
               st.compat, (v) => _set(() => st.compat = v),

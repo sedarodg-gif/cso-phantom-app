@@ -25,6 +25,16 @@ if _acts0:
     _pm0 = re.search(r'^\s*package\s+([\w.]+)', open(_acts0[0], encoding='utf-8').read(), re.M)
     if _pm0:
         _svc_pkg = _pm0.group(1)
+if 'REQUEST_IGNORE_BATTERY_OPTIMIZATIONS' not in s:
+    s = s.replace('<application',
+                  '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>\n    <application', 1)
+if 'ConnectTileService' not in s:
+    _tile = ('<service android:name="%s.ConnectTileService" android:label="CSO Phantom" '
+             'android:icon="@android:drawable/ic_lock_lock" android:exported="true" '
+             'android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">'
+             '<intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>'
+             '</service>') % _svc_pkg
+    s = s.replace('</application>', '    ' + _tile + '\n    </application>', 1)
 if 'HunterService' not in s:
     s = s.replace('</application>', """    <service android:name="%s.HunterService" android:exported="true"
             android:label="CSO Phantom Chasseur IP"
@@ -108,6 +118,25 @@ class MainActivity : FlutterActivity() {
     private var pending: MethodChannel.Result? = null
     private var pendingText: String? = null
     private var pendingBin: Boolean = false
+    private var pendingAction: String? = null
+    private var dnsttProc: Process? = null
+    private val dnsttLog = StringBuilder()
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        readAction(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        readAction(intent)
+    }
+
+    private fun readAction(i: Intent?) {
+        val a = i?.action
+        if (a == "cso.STOP") pendingAction = "stop"
+        if (a == "cso.TOGGLE") pendingAction = "toggle"
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -166,6 +195,67 @@ class MainActivity : FlutterActivity() {
                     }
                     "deviceId" -> {
                         result.success(Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "")
+                    }
+                    "dnsttStart" -> {
+                        try {
+                            dnsttProc?.destroy()
+                            dnsttProc = null
+                            val f = java.io.File(applicationInfo.nativeLibraryDir, "libdnstt.so")
+                            if (!f.exists()) {
+                                result.success("absent")
+                            } else {
+                                f.setExecutable(true)
+                                val resolver = call.argument<String>("resolver") ?: "8.8.8.8:53"
+                                val key = call.argument<String>("key") ?: ""
+                                val domain = call.argument<String>("domain") ?: ""
+                                val port = call.argument<Int>("port") ?: 5300
+                                dnsttLog.setLength(0)
+                                val pb = ProcessBuilder(f.path, "-udp", resolver, "-pubkey", key, domain, "127.0.0.1:" + port)
+                                pb.redirectErrorStream(true)
+                                val p = pb.start()
+                                dnsttProc = p
+                                Thread {
+                                    try {
+                                        p.inputStream.bufferedReader().forEachLine { l ->
+                                            if (dnsttLog.length < 4000) dnsttLog.append(l).append(System.lineSeparator())
+                                        }
+                                    } catch (e: Exception) {
+                                    }
+                                }.start()
+                                result.success("ok")
+                            }
+                        } catch (e: Exception) {
+                            result.success("erreur : " + (e.message ?: ""))
+                        }
+                    }
+                    "dnsttStop" -> {
+                        try {
+                            dnsttProc?.destroy()
+                        } catch (e: Exception) {
+                        }
+                        dnsttProc = null
+                        result.success("ok")
+                    }
+                    "dnsttLog" -> {
+                        result.success(dnsttLog.toString())
+                    }
+                    "takeAction" -> {
+                        val a = pendingAction
+                        pendingAction = null
+                        result.success(a)
+                    }
+                    "batteryOpt" -> {
+                        try {
+                            val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                            i.data = android.net.Uri.parse("package:" + packageName)
+                            startActivity(i)
+                        } catch (e: Exception) {
+                            try {
+                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            } catch (e2: Exception) {
+                            }
+                        }
+                        result.success(true)
                     }
                     "hunterOn" -> {
                         result.success(HunterService.inst != null)
@@ -466,3 +556,42 @@ open(_res + '/values/cso_hunter.xml', 'w', encoding='utf-8').write(_str)
 if acts and acts[0].endswith('.kt'):
     open(os.path.join(os.path.dirname(acts[0]), 'HunterService.kt'), 'w', encoding='utf-8').write(_svc_kt.replace('PKGNAME', pkg))
     print('HunterService OK')
+
+# --- Tuile des reglages rapides : connecter / deconnecter depuis le panneau ---
+_tile_kt = '''package PKGNAME
+
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Build
+import android.service.quicksettings.Tile
+import android.service.quicksettings.TileService
+
+class ConnectTileService : TileService() {
+    override fun onStartListening() {
+        super.onStartListening()
+        val t = qsTile
+        if (t != null) {
+            t.state = Tile.STATE_INACTIVE
+            t.label = "CSO Phantom"
+            t.updateTile()
+        }
+    }
+
+    override fun onClick() {
+        super.onClick()
+        val i = Intent(this, MainActivity::class.java)
+        i.action = "cso.TOGGLE"
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (Build.VERSION.SDK_INT >= 34) {
+            val pi = PendingIntent.getActivity(this, 3, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            startActivityAndCollapse(pi)
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(i)
+        }
+    }
+}
+'''
+if acts and acts[0].endswith('.kt'):
+    open(os.path.join(os.path.dirname(acts[0]), 'ConnectTileService.kt'), 'w', encoding='utf-8').write(_tile_kt.replace('PKGNAME', pkg))
+    print('Tuile OK')

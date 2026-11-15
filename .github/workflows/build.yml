@@ -18,6 +18,18 @@ jobs:
           channel: stable
       - name: Generer la partie Android
         run: flutter create --platforms=android --org com.csophantom --project-name cso_phantom .
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Compiler le client DNSTT (facultatif)
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://github.com/Mygod/dnstt /tmp/dnstt
+          cd /tmp/dnstt/dnstt-client
+          mkdir -p "$GITHUB_WORKSPACE/android/app/src/main/jniLibs/arm64-v8a" "$GITHUB_WORKSPACE/android/app/src/main/jniLibs/armeabi-v7a"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/android/app/src/main/jniLibs/arm64-v8a/libdnstt.so" .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/android/app/src/main/jniLibs/armeabi-v7a/libdnstt.so" .
+          ls -la "$GITHUB_WORKSPACE"/android/app/src/main/jniLibs/*/
       - name: Adapter Android pour le VPN
         run: python3 tool/patch_android.py
       - run: rm -rf test

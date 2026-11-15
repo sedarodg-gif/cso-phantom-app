@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:io' show HttpClient, NetworkInterface;
+import 'dart:io' show HttpClient, NetworkInterface, Socket;
 import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
@@ -29,7 +29,7 @@ const kGreen = Color(0xFF6FCF7F);
 const kAmber = Color(0xFFE8C26A);
 
 /// Version affichée dans l'application.
-const kAppVersion = 'V8.7';
+const kAppVersion = 'V9.1';
 
 const kTypeNames = {
   'vless': 'VLESS',
@@ -396,7 +396,7 @@ void _applyPolicy(Map m, int kb) {
 
 /// SSH : on réutilise l'habillage Xray (TUN, DNS...) mais la sortie « proxy »
 /// devient le proxy SOCKS5 local qui passe par le tunnel SSH.
-String buildSshConfig(String base, List<int> ports, List<String> ips, {List<String>? dns, int bufferKb = 0}) {
+String buildSshConfig(String base, List<int> ports, List<String> ips, {List<String>? dns, int bufferKb = 0, bool udp = false}) {
   final m = Map<String, dynamic>.from(jsonDecode(base) as Map);
   final outs = List<dynamic>.from((m['outbounds'] as List?) ?? <dynamic>[]);
   final pool = ports.length > 1;
@@ -444,7 +444,13 @@ String buildSshConfig(String base, List<int> ports, List<String> ips, {List<Stri
   }
   // DNS UDP -> résolveur interne (DoH via le tunnel) ; autre UDP bloqué (SSH = TCP seulement)
   pre.add({'type': 'field', 'network': 'udp', 'port': '53', 'outboundTag': 'ssh-dns'});
-  pre.add({'type': 'field', 'network': 'udp', 'outboundTag': 'ssh-block'});
+  if (udp) {
+    // UDPGW actif : l'UDP passe par le tunnel SSH, sauf QUIC (443) pour que les navigateurs reviennent en TCP
+    pre.add({'type': 'field', 'network': 'udp', 'port': '443', 'outboundTag': 'ssh-block'});
+    if (!pool) pre.add({'type': 'field', 'network': 'udp', 'outboundTag': 'proxy'});
+  } else {
+    pre.add({'type': 'field', 'network': 'udp', 'outboundTag': 'ssh-block'});
+  }
   if (pool) {
     // répartit les connexions TCP sur plusieurs tunnels SSH
     final conv = <dynamic>[];
@@ -918,11 +924,12 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
+class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _shareCh = MethodChannel('cso/share');
 
   SharedPreferences? _prefs;
   List<Server> _servers = [];
+  List<Map<String, dynamic>> _subs = []; // abonnements (nom, lien, ids des serveurs)
   String? _selId;
   int _tab = 0;
 
@@ -981,11 +988,32 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     gConnectHook = () {
       if (mounted && _state == 'off') _toggle();
     };
     // à l'ouverture : on reprend un VPN encore actif au lieu de le couper
     _load().then((_) => _startupSync());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkExternal();
+  }
+
+  /// Action demandée depuis la tuile des réglages rapides.
+  Future<bool> _checkExternal() async {
+    String? a;
+    try {
+      a = await _shareCh.invokeMethod<String>('takeAction');
+    } catch (_) {}
+    if (a == null || a.isEmpty || !mounted) return false;
+    if (a == 'stop') {
+      if (_state == 'on') _toggle();
+    } else if (a == 'toggle') {
+      _toggle();
+    }
+    return true;
   }
 
   /// Vrai si une interface VPN (tun) est présente sur le téléphone.
@@ -1016,6 +1044,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       if (d > 0) {
         setState(() => _setOn(resume: startMs > 0 ? startMs : DateTime.now().millisecondsSinceEpoch));
         _log('VPN toujours actif : session reprise (le chrono continue)');
+        _checkExternal();
         return;
       }
     }
@@ -1024,10 +1053,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final p = await SharedPreferences.getInstance();
       await p.setBool('vpnOn', false);
     } catch (_) {}
+    final used = await _checkExternal();
+    if (!used && _st.autoConnect && _selected != null && mounted) {
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (mounted && _state == 'off') _toggle();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _timeout?.cancel();
     for (final e in _sshEngines) {
@@ -1041,6 +1076,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     _prefs = p;
+    try {
+      final sj2 = p.getString('subs');
+      if (sj2 != null) {
+        _subs = (jsonDecode(sj2) as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
+    } catch (_) {}
     final raw = p.getString('servers');
     if (raw != null) {
       try {
@@ -1231,7 +1272,72 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         'payload': s.payload,
         'proxy': s.proxy,
         'keepAlive': _st.sshKeepAlive,
+        'udpgw': int.tryParse((s.extra['udpgw'] ?? '').toString().trim()) ?? 0,
       };
+
+  bool _isDnstt(Server s) => s.type == 'ssh' && s.extra['mode'] == 'dnstt';
+
+  String _dnsttIp = '';
+
+  /// Prépare la config SSH. Pour DNSTT, lance d'abord le client DNS local puis vise 127.0.0.1.
+  Future<Map<String, dynamic>> _sshPrep(Server s) async {
+    final cfg = _sshCfg(s);
+    _dnsttIp = '';
+    if (!_isDnstt(s)) return cfg;
+    final key = (s.extra['dtkey'] ?? '').toString().trim();
+    var res = (s.extra['dtdns'] ?? '').toString().trim();
+    if (res.isEmpty) res = '8.8.8.8:53';
+    if (!res.contains(':')) res = '$res:53';
+    if (key.isEmpty || s.host.trim().isEmpty) {
+      throw 'DNSTT : le domaine (NS) et la clé publique sont obligatoires';
+    }
+    final port = 20000 + (DateTime.now().millisecondsSinceEpoch % 20000);
+    String? r;
+    try {
+      r = await _shareCh.invokeMethod<String>('dnsttStart', {
+        'resolver': res,
+        'key': key,
+        'domain': s.host.trim(),
+        'port': port,
+      });
+    } catch (e) {
+      r = e.toString();
+    }
+    if (r != 'ok') {
+      throw r == 'absent' ? 'DNSTT indisponible : le module n\'a pas été compilé dans cette version' : 'DNSTT : $r';
+    }
+    var up = false;
+    for (var i = 0; i < 25 && !up; i++) {
+      try {
+        final t = await Socket.connect('127.0.0.1', port, timeout: const Duration(milliseconds: 400));
+        t.destroy();
+        up = true;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+    }
+    if (!up) {
+      try {
+        final lg = (await _shareCh.invokeMethod<String>('dnsttLog')) ?? '';
+        _log('DNSTT : ${lg.trim().isEmpty ? "aucun message" : lg.trim()}');
+      } catch (_) {}
+      _dnsttStop();
+      throw 'DNSTT : le client DNS ne démarre pas';
+    }
+    _dnsttIp = res.substring(0, res.lastIndexOf(':'));
+    cfg['host'] = '127.0.0.1';
+    cfg['port'] = port;
+    cfg['tls'] = false;
+    cfg['sni'] = '';
+    cfg['hosth'] = '';
+    cfg['payload'] = '';
+    cfg['proxy'] = '';
+    return cfg;
+  }
+
+  void _dnsttStop() {
+    _shareCh.invokeMethod<String>('dnsttStop').catchError((Object _) => null);
+  }
 
   void _onStatus(dynamic st) {
     var s = '';
@@ -1308,6 +1414,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _sshEngines.clear();
     _poolStat.clear();
     _sshMode = false;
+    _dnsttStop();
   }
 
   Future<void> _disconnectAll() async {
@@ -1706,7 +1813,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     });
     try {
       final n = _st.sshPool.clamp(1, 4).toInt();
-      final scfg = _sshCfg(s);
+      final scfg = await _sshPrep(s);
       final engines = <SshEngine>[
         for (var i = 0; i < n; i++) SshEngine((Map<String, dynamic> m) => _onSshEvent(i, m)),
       ];
@@ -1730,12 +1837,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         }
         _log('SSH : ${okList.length}/$n connexions actives');
       }
-      final ips = <String>{for (final e in okList) ...e.ips}.toList();
+      final ips = <String>{for (final e in okList) ...e.ips, if (_dnsttIp.isNotEmpty) _dnsttIp}.toList();
       final ports = [for (final e in okList) e.port];
       final scaffold = FlutterVless.parse(
         'vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?type=tcp&security=none#ssh',
       );
-      final cfg = buildSshConfig(scaffold.getFullConfiguration(), ports, ips, dns: _st.dnsServers(), bufferKb: _st.bufferKb);
+      final cfg = buildSshConfig(scaffold.getFullConfiguration(), ports, ips, dns: _st.dnsServers(), bufferKb: _st.bufferKb, udp: ((scfg['udpgw'] as int?) ?? 0) > 0);
       await _ensureInit();
       final ok = await _vless.requestPermission();
       if (!ok) {
@@ -1781,12 +1888,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       var ms = -1;
       String err = '';
       try {
-        await eng.start(_sshCfg(s));
+        await eng.start(await _sshPrep(s));
         ms = sw.elapsedMilliseconds;
       } catch (e) {
         err = e.toString();
       }
       eng.stop();
+      if (_isDnstt(s)) _dnsttStop();
       if (!mounted) return;
       setState(() => _pings[s.id] = ms > 0 ? ms : -1);
       _toast(ms > 0 ? 'SSH OK : connecté en $ms ms' : 'SSH échec : $err');
@@ -1819,12 +1927,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final eng = SshEngine((Map<String, dynamic> _) {});
       var ms = -1;
       try {
-        await eng.start(_sshCfg(s));
+        await eng.start(await _sshPrep(s));
         ms = sw.elapsedMilliseconds;
       } catch (_) {
         ms = -1;
       }
       eng.stop();
+      if (_isDnstt(s)) _dnsttStop();
       return ms > 0 ? ms : -1;
     }
     try {
@@ -2045,6 +2154,198 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _doImport(t);
   }
 
+  // ---------- abonnements ----------
+  void _saveSubs() {
+    SharedPreferences.getInstance().then((p) => p.setString('subs', jsonEncode(_subs)));
+  }
+
+  Future<String> _fetchText(String url) async {
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+    try {
+      final req = await c.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 15));
+      req.headers.set('User-Agent', 'v2rayNG/1.8.5');
+      final res = await req.close().timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) throw 'réponse ${res.statusCode}';
+      final bytes = <int>[];
+      await for (final ch in res.timeout(const Duration(seconds: 20))) {
+        bytes.addAll(ch);
+        if (bytes.length > 4 * 1024 * 1024) break;
+      }
+      return utf8.decode(bytes, allowMalformed: true);
+    } finally {
+      c.close(force: true);
+    }
+  }
+
+  String _subDecode(String body) {
+    final t = body.trim();
+    if (t.contains('://')) return t;
+    try {
+      var b = t.replaceAll(RegExp(r'\s'), '').replaceAll('-', '+').replaceAll('_', '/');
+      while (b.length % 4 != 0) {
+        b += '=';
+      }
+      return utf8.decode(base64.decode(b), allowMalformed: true);
+    } catch (_) {
+      return t;
+    }
+  }
+
+  Future<int> _syncSub(Map<String, dynamic> sub) async {
+    final text = _subDecode(await _fetchText(sub['url'] as String));
+    final fresh = <Server>[];
+    for (final tk in text.split(RegExp(r'\s+'))) {
+      if (!tk.contains('://')) continue;
+      final many = parseBundle(tk);
+      if (many != null) {
+        fresh.addAll(many);
+        continue;
+      }
+      final one = parseLink(tk);
+      if (one != null) fresh.add(one);
+    }
+    if (fresh.isEmpty) throw 'aucun serveur valide dans ce lien';
+    final name = sub['name'] as String;
+    final old = Set<String>.from((sub['ids'] as List).map((e) => e.toString()));
+    setState(() {
+      final selWasOld = _selId != null && old.contains(_selId);
+      _servers.removeWhere((x) => old.contains(x.id));
+      for (final n in fresh) {
+        n.group = name;
+        _servers.add(n);
+      }
+      sub['ids'] = fresh.map((x) => x.id).toList();
+      if (_selId == null || (selWasOld && !_servers.any((x) => x.id == _selId))) _selId = fresh.first.id;
+    });
+    _save();
+    _saveSubs();
+    return fresh.length;
+  }
+
+  Future<void> _addSub(String name, String url) async {
+    if (_state != 'off') {
+      _toast("Déconnecte-toi d'abord");
+      return;
+    }
+    _toast('Téléchargement...');
+    final sub = <String, dynamic>{'name': name, 'url': url, 'ids': <String>[]};
+    try {
+      final k = await _syncSub(sub);
+      _subs.add(sub);
+      _saveSubs();
+      _toast('$k serveur(s) ajouté(s)');
+    } catch (e) {
+      _toast('Échec : $e');
+    }
+  }
+
+  void _addSubDialog() {
+    final nameC = TextEditingController();
+    final urlC = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF10121A),
+        title: const Text('Abonnement'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameC, decoration: const InputDecoration(labelText: 'Nom (devient le dossier)')),
+            TextField(
+              controller: urlC,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'Lien https://...'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          FilledButton(
+            onPressed: () {
+              final u = urlC.text.trim();
+              final n = nameC.text.trim().isEmpty ? 'Abonnement' : nameC.text.trim();
+              if (!u.startsWith('http')) {
+                _toast('Le lien doit commencer par http');
+                return;
+              }
+              Navigator.pop(ctx);
+              _addSub(n, u);
+            },
+            child: const Text('Ajouter'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updateSubs() async {
+    if (_subs.isEmpty) {
+      _toast("Aucun abonnement : ajoute d'abord un lien");
+      return;
+    }
+    if (_state != 'off') {
+      _toast("Déconnecte-toi d'abord");
+      return;
+    }
+    _toast('Mise à jour...');
+    var n = 0;
+    var bad = 0;
+    for (final sb in List<Map<String, dynamic>>.from(_subs)) {
+      try {
+        n += await _syncSub(sb);
+      } catch (_) {
+        bad++;
+      }
+    }
+    _toast('$n serveur(s) à jour${bad > 0 ? ' · $bad échec(s)' : ''}');
+  }
+
+  void _removeSub(Map<String, dynamic> sb) {
+    setState(() => _subs.remove(sb));
+    _saveSubs();
+    _toast('Abonnement retiré (les serveurs restent dans la liste)');
+  }
+
+  // ---------- sauvegarde / restauration ----------
+  void _backup() {
+    final list = _servers.where((x) => !x.locked && !x.lockSsh).map((x) => x.toJson()).toList();
+    final data = jsonEncode({'cso_backup': 1, 'servers': list, 'settings': _st.toJson(), 'subs': _subs});
+    _saveBin(data);
+  }
+
+  bool _tryRestore(String t) {
+    final txt = t.trim();
+    if (!txt.startsWith('{') || !txt.contains('cso_backup')) return false;
+    if (_state != 'off') {
+      _toast("Déconnecte-toi d'abord pour restaurer");
+      return true;
+    }
+    try {
+      final m = jsonDecode(txt) as Map;
+      final list = (m['servers'] as List).map((e) => Server.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+      setState(() {
+        final keep = _servers.where((x) => x.locked || x.lockSsh).toList();
+        _servers
+          ..clear()
+          ..addAll(keep)
+          ..addAll(list);
+        if (m['settings'] is Map) {
+          _st = AppSettings.fromJson(Map<String, dynamic>.from(m['settings'] as Map));
+        }
+        _subs = (m['subs'] is List)
+            ? (m['subs'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList()
+            : <Map<String, dynamic>>[];
+        _selId = _servers.isEmpty ? null : _servers.first.id;
+      });
+      _save();
+      _saveSubs();
+      _toast('${list.length} serveur(s) restauré(s)');
+    } catch (e) {
+      _toast('Sauvegarde illisible : $e');
+    }
+    return true;
+  }
+
   Future<void> _importFile() async {
     try {
       final t = await _shareCh.invokeMethod<String>('openFile');
@@ -2055,9 +2356,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           _toast('Fichier .bin illisible ou abîmé');
           return;
         }
+        if (_tryRestore(d)) return;
         _doImport(d);
         return;
       }
+      if (_tryRestore(t)) return;
       _doImport(t);
     } catch (e) {
       _toast('Impossible de lire le fichier : $e');
@@ -2670,7 +2973,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             _PAct(Icons.link, 'Importer un lien', _openImport),
             _PAct(Icons.qr_code_scanner, 'Scanner un QR code', _scanQr),
             _PAct(Icons.file_open_outlined, 'Importer un fichier', _importFile),
-            _PAct(Icons.ios_share, 'Exporter (lien ou fichier)', () => _openShare(_servers)),
+            _PAct(Icons.ios_share, 'Exporter (lien, fichier ou QR)', () => _openShare(_servers)),
+            _PAct(Icons.rss_feed, 'Abonnement : ajouter un lien', _addSubDialog),
+            _PAct(Icons.refresh, 'Abonnements : mettre à jour', _updateSubs),
+            for (final sb in _subs)
+              _PAct(Icons.link_off, "Retirer l'abonnement « ${sb['name']} »", () => _removeSub(sb)),
+            _PAct(Icons.save_alt, 'Sauvegarde : enregistrer tout', _backup),
+            _PAct(Icons.settings_backup_restore, 'Sauvegarde : restaurer depuis un fichier', _importFile),
           ]),
           icon: const Icon(Icons.swap_vert),
           label: const Text('Importer / Exporter'),
@@ -3031,8 +3340,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       context: context,
       backgroundColor: const Color(0xFF10121A),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
+        child: SingleChildScrollView(
+         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -3051,6 +3362,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               ),
             const SizedBox(height: 8),
           ],
+         ),
         ),
       ),
     );
@@ -3233,7 +3545,7 @@ class _ServerFormState extends State<ServerForm> {
     'tls_proxy': 'SSH-TLS-Proxy',
     'tls_payload': 'SSH-TLS-Payload',
     'tls_proxy_payload': 'SSH-TLS-Proxy-Payload',
-    'dnstt': 'SSH-DNSTT (non pris en charge)',
+    'dnstt': 'SSH-DNSTT (SlowDNS)',
   };
   static const _plHttp = 'GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]';
   static const _plConnect = '[netData][crlf]Host: [host_port][crlf][crlf]';
@@ -3248,6 +3560,10 @@ class _ServerFormState extends State<ServerForm> {
   late String mode;
   late String xmode;
   bool adv = false;
+  bool dnstt = false;
+  final dtkey = TextEditingController();
+  final dtdns = TextEditingController();
+  final udpgw = TextEditingController();
   final name = TextEditingController();
   final host = TextEditingController();
   final port = TextEditingController();
@@ -3285,6 +3601,10 @@ class _ServerFormState extends State<ServerForm> {
     payload.text = s?.payload ?? '';
     group.text = s?.group ?? '';
     proxy.text = s?.proxy ?? '';
+    dnstt = (s?.type == 'ssh') && s?.extra['mode'] == 'dnstt';
+    dtkey.text = s?.extra['dtkey'] ?? '';
+    dtdns.text = s?.extra['dtdns'] ?? '';
+    udpgw.text = s?.extra['udpgw'] ?? '';
     mode = _detectMode();
     xmode = _detectX();
     adv = false;
@@ -3336,6 +3656,7 @@ class _ServerFormState extends State<ServerForm> {
   }
 
   String _detectMode() {
+    if (dnstt) return 'dnstt';
     final parts = <String>[
       if (sshTls) 'tls',
       if (proxy.text.trim().isNotEmpty) 'proxy',
@@ -3348,6 +3669,13 @@ class _ServerFormState extends State<ServerForm> {
     final hasProxy = m.contains('proxy');
     final hasPayload = m.contains('payload');
     mode = m;
+    dnstt = m == 'dnstt';
+    if (dnstt) {
+      sshTls = false;
+      proxy.text = '';
+      payload.text = '';
+      return;
+    }
     sshTls = m.startsWith('tls');
     if (!hasProxy) proxy.text = '';
     if (!hasPayload) {
@@ -3359,7 +3687,7 @@ class _ServerFormState extends State<ServerForm> {
 
   @override
   void dispose() {
-    for (final c in [name, host, port, uuid, user, pass, path, hosth, sni, payload, proxy, group]) {
+    for (final c in [name, host, port, uuid, user, pass, path, hosth, sni, payload, proxy, group, dtkey, dtdns, udpgw]) {
       c.dispose();
     }
     super.dispose();
@@ -3373,6 +3701,7 @@ class _ServerFormState extends State<ServerForm> {
   bool vis(String f) {
     if (!v(f)) return false;
     if (type == 'ssh') {
+      if (dnstt && (f == 'sni' || f == 'insec' || f == 'proxy' || f == 'payload' || f == 'hosth' || f == 'sshtls')) return false;
       if (f == 'sni' || f == 'insec') return sshTls;
       if (f == 'proxy') return mode.contains('proxy');
       if (f == 'payload') return mode.contains('payload');
@@ -3488,9 +3817,31 @@ class _ServerFormState extends State<ServerForm> {
       setState(() => err = 'Proxy : indique hôte:port (ex. 10.0.0.1:8080)');
       return;
     }
+    if (type == 'ssh' && dnstt && dtkey.text.trim().isEmpty) {
+      setState(() => err = 'DNSTT : la clé publique du serveur est obligatoire');
+      return;
+    }
     final h = host.text.trim();
     final old = widget.server;
     final isSsh = type == 'ssh';
+    final ex = (old != null && old.type == type) ? Map<String, String>.from(old.extra) : <String, String>{};
+    if (isSsh) {
+      final ug = udpgw.text.trim();
+      if (ug.isEmpty) {
+        ex.remove('udpgw');
+      } else {
+        ex['udpgw'] = ug;
+      }
+      if (dnstt) {
+        ex['mode'] = 'dnstt';
+        ex['dtkey'] = dtkey.text.trim();
+        ex['dtdns'] = dtdns.text.trim();
+      } else {
+        ex.remove('mode');
+        ex.remove('dtkey');
+        ex.remove('dtdns');
+      }
+    }
     widget.onSave(Server(
       id: old?.id ?? newId(),
       name: name.text.trim().isEmpty ? h : name.text.trim(),
@@ -3517,9 +3868,7 @@ class _ServerFormState extends State<ServerForm> {
       lockSsh: old?.lockSsh ?? false,
       group: group.text.trim(),
       expires: old?.expires ?? 0,
-      extra: (old != null && old.type == type)
-          ? Map<String, String>.from(old.extra)
-          : <String, String>{},
+      extra: ex,
     ));
     Navigator.pop(context);
   }
@@ -3575,7 +3924,11 @@ class _ServerFormState extends State<ServerForm> {
               });
             }),
             Row(children: [
-              Expanded(flex: 3, child: _field('Serveur / IP', host, hint: 'exemple.com')),
+              Expanded(
+                  flex: 3,
+                  child: dnstt
+                      ? _field('Domaine NS (DNSTT)', host, hint: 'ns.exemple.com')
+                      : _field('Serveur / IP', host, hint: 'exemple.com')),
               const SizedBox(width: 10),
               Expanded(flex: 1, child: _field('Port', port, num: true)),
             ]),
@@ -3596,12 +3949,8 @@ class _ServerFormState extends State<ServerForm> {
               }, (x) => setState(() => method = x)),
             if (v('sshmode'))
               _drop('Mode SSH', mode, _modes, (x) => setState(() {
-                    if (x == 'dnstt') {
-                      err = "SSH-DNSTT (tunnel par DNS) n'est pas encore pris en charge : il demande un client DNSTT dédié.";
-                    } else {
-                      err = '';
-                      _applyMode(x);
-                    }
+                    err = '';
+                    _applyMode(x);
                   })),
             if (_isX)
               _drop('Mode', _xmodesFor().containsKey(xmode) ? xmode : _xmodesFor().keys.first, _xmodesFor(), (x) => setState(() => _applyX(x))),
@@ -3652,6 +4001,12 @@ class _ServerFormState extends State<ServerForm> {
               ),
             if (vis('proxy'))
               _field('Proxy (hôte:port)', proxy, hint: 'ex. 10.0.0.1:8080'),
+            if (type == 'ssh' && dnstt)
+              _field('Clé publique du serveur DNSTT', dtkey, hint: '64 caractères hexadécimaux'),
+            if (type == 'ssh' && dnstt)
+              _field('Résolveur DNS (IP:port)', dtdns, hint: '8.8.8.8:53'),
+            if (type == 'ssh')
+              _field('UDPGW (port sur le serveur)', udpgw, hint: '7300 : UDP, appels, jeux. Vide = désactivé'),
             if (vis('mux'))
               _switch('Mux', "Accélère l'ouverture des pages sur certains serveurs. Désactive-le si la connexion échoue.",
                   mux, (x) => setState(() => mux = x)),
