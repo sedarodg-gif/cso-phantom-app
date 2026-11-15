@@ -33,24 +33,13 @@ if 'HunterService' not in s:
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/hunter_config"/>
         </service>
     </application>""" % _svc_pkg, 1)
-# --- AdMob : identifiant de l'application (identifiant de test tant qu'on n'a pas les vrais) ---
-try:
-    _cfg = open('lib/ads_config.dart', encoding='utf-8').read()
-    _mm = re.search(r"kAdmobAppId\s*=\s*'([^']+)'", _cfg)
-    _app_id = _mm.group(1) if _mm else 'ca-app-pub-3940256099942544~3347511713'
-except OSError:
-    _app_id = 'ca-app-pub-3940256099942544~3347511713'
-if 'com.google.android.gms.ads.APPLICATION_ID' not in s:
-    s = re.sub(r'(<application[^>]*>)',
-               lambda x: x.group(1) + '\n        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="' + _app_id + '"/>',
-               s, count=1)
 open(m, 'w', encoding='utf-8').write(s)
 print('Manifest OK')
 
-# --- Gradle : minSdk 24 + extraction des libs natives ---
+# --- Gradle : minSdk 23 + extraction des libs natives ---
 for f in glob.glob('android/app/build.gradle*'):
     t = open(f, encoding='utf-8').read()
-    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>24', t)
+    t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>23', t)
     if 'useLegacyPackaging' not in t:
         t = re.sub(r'android\s*\{',
                    'android {\n    packaging { jniLibs { useLegacyPackaging = true } }', t, count=1)
